@@ -1,6 +1,6 @@
 # SATCCO App
 
-Aplicativo Flutter para gestão de avaliações acadêmicas. Professores criam formulários, atribuem-nos a turmas e geram QR Codes para que alunos respondam. O sistema calcula notas automaticamente e envia comprovantes por e-mail em PDF.
+Aplicativo Flutter para gestão de avaliações. Professores criam formulários, atribuem-nos a turmas e geram QR Codes para que alunos respondam. O sistema calcula notas automaticamente.
 
 ---
 
@@ -130,7 +130,7 @@ lib/
 │   └── responder_formulario_page.dart # Resposta ao formulário e exibição da nota
 ├── services/
 │   ├── auth_service.dart              # Wrapper do Firebase Authentication
-│   ├── pdf_service.dart               # Geração de PDFs (notas e comprovantes)
+│   ├── pdf_service.dart               # Geração de PDFs (notas)
 │   ├── email/
 │   │   └── email_service.dart         # Envio de e-mails via SMTP
 │   └── database/
