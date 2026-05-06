@@ -69,7 +69,6 @@ Após criar o projeto e adicionar os dois aplicativos (Android e iOS), a seção
 O aplicativo usa SMTP do Gmail via pacote `mailer` para enviar:
 
 - Códigos de verificação de cadastro (6 dígitos, válidos por 10 minutos).
-- Comprovantes de avaliação em PDF para o e-mail do aluno.
 - Relatórios de notas em PDF para o e-mail do professor.
 
 ### 1. Criar uma Senha de App no Gmail
@@ -238,7 +237,7 @@ Exibe as perguntas do formulário sequencialmente. Ao submeter:
 
 - Calcula a nota automaticamente com base nos pesos e nas respostas corretas.
 - Armazena a resposta com ID determinístico (`{formularioId}_{alunoId}`) para evitar duplicatas.
-- Exibe a nota e oferece opção de enviar comprovante em PDF para o e-mail do aluno.
+- Exibe a nota do aluno.
 
 **Lógica de cálculo da nota:**
 
@@ -260,7 +259,7 @@ Nota final = `(pontos obtidos / pontos possíveis) × 10`, limitada a 10,0. Se o
 | -------------------------------- | ---------------------------------------------------------------------------------- |
 | `auth_service.dart`              | Wrapper do Firebase Auth (login, cadastro, logout, stream de estado).              |
 | `email_service.dart`             | Envio de e-mails via SMTP Gmail: código de verificação, comprovante PDF e relatório de notas PDF. |
-| `pdf_service.dart`               | Geração de PDFs: relatório de notas da turma (professor) e comprovante do aluno.   |
+| `pdf_service.dart`               | Geração de PDFs: relatório de notas da turma (professor).   |
 
 ### Camada de banco de dados (`services/database/`)
 
