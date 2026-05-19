@@ -85,12 +85,18 @@ class _TurmaDetailPageState extends State<TurmaDetailPage>
       alunoNome: alunoNome,
     );
 
+    // Envia email de convite em background (falha silenciosa para não bloquear o fluxo)
+    EmailService.enviarConviteAluno(
+      destinatario: email,
+      turmaNome: widget.turmaNome,
+    ).catchError((_) {});
+
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(alunoId != null
-            ? 'Aluno adicionado com sucesso!'
-            : 'Convite registado. Ficará ativo quando o aluno criar a conta.'),
+            ? 'Aluno adicionado com sucesso! Email de convite enviado.'
+            : 'Convite registado e email enviado. Ficará ativo quando o aluno criar a conta.'),
         backgroundColor: Colors.green,
         duration: const Duration(seconds: 3),
       ),
@@ -311,7 +317,19 @@ class _AlunosTab extends StatelessWidget {
             if (snapshot.connectionState == ConnectionState.waiting) {
               return const Center(child: CircularProgressIndicator());
             }
-            final docs = snapshot.data?.docs ?? [];
+            final docs = [...(snapshot.data?.docs ?? [])]..sort((a, b) {
+                final aData = a.data() as Map<String, dynamic>;
+                final bData = b.data() as Map<String, dynamic>;
+                final aKey = ((aData['nome'] as String?) ??
+                        (aData['email'] as String?) ??
+                        '')
+                    .toLowerCase();
+                final bKey = ((bData['nome'] as String?) ??
+                        (bData['email'] as String?) ??
+                        '')
+                    .toLowerCase();
+                return aKey.compareTo(bKey);
+              });
 
             if (docs.isEmpty) {
               return const EmptyState(
@@ -347,28 +365,101 @@ class _AlunosTab extends StatelessWidget {
                           offset: const Offset(0, 3)),
                     ],
                   ),
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: statusColor.withValues(alpha: 0.1),
-                      child: Icon(Icons.person, color: statusColor),
-                    ),
-                    title: Text(
-                      nome ?? email,
-                      style: TextStyle(
-                        fontWeight: FontWeight.w600,
-                        color: (!temConta || ativo)
-                            ? Colors.black87
-                            : Colors.grey.shade500,
-                      ),
-                    ),
-                    subtitle: nome != null
-                        ? Text(email,
-                            style: const TextStyle(
-                                fontSize: 12, color: Colors.grey))
-                        : null,
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 4, 8),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        Row(
+                          children: [
+                            CircleAvatar(
+                              backgroundColor:
+                                  statusColor.withValues(alpha: 0.1),
+                              child: Icon(Icons.person, color: statusColor),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  if (nome != null)
+                                    Text(
+                                      nome,
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 15,
+                                        color: (!temConta || ativo)
+                                            ? Colors.black87
+                                            : Colors.grey.shade500,
+                                      ),
+                                    ),
+                                  Text(
+                                    email,
+                                    style: TextStyle(
+                                      fontSize: nome != null ? 12 : 15,
+                                      fontWeight: nome != null
+                                          ? FontWeight.normal
+                                          : FontWeight.w600,
+                                      color: nome != null
+                                          ? Colors.grey
+                                          : ((!temConta || ativo)
+                                              ? Colors.black87
+                                              : Colors.grey.shade500),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            PopupMenuButton<String>(
+                              icon: Icon(Icons.more_vert,
+                                  color: Colors.grey.shade400),
+                              onSelected: (val) {
+                                switch (val) {
+                                  case 'inativar':
+                                    _toggleAtivo(context, doc.id, false);
+                                  case 'reativar':
+                                    _toggleAtivo(context, doc.id, true);
+                                  case 'remover':
+                                    _remover(
+                                        context, doc.id, email, alunoId);
+                                }
+                              },
+                              itemBuilder: (_) => [
+                                if (temConta && ativo)
+                                  const PopupMenuItem(
+                                    value: 'inativar',
+                                    child: Row(children: [
+                                      Icon(Icons.block,
+                                          color: Colors.orange, size: 18),
+                                      SizedBox(width: 10),
+                                      Text('Inativar'),
+                                    ]),
+                                  ),
+                                if (temConta && !ativo)
+                                  const PopupMenuItem(
+                                    value: 'reativar',
+                                    child: Row(children: [
+                                      Icon(Icons.check_circle_outline,
+                                          color: Colors.green, size: 18),
+                                      SizedBox(width: 10),
+                                      Text('Reativar'),
+                                    ]),
+                                  ),
+                                const PopupMenuItem(
+                                  value: 'remover',
+                                  child: Row(children: [
+                                    Icon(Icons.delete_outline,
+                                        color: Colors.red, size: 18),
+                                    SizedBox(width: 10),
+                                    Text('Remover',
+                                        style: TextStyle(color: Colors.red)),
+                                  ]),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
                         Container(
                           padding: const EdgeInsets.symmetric(
                               horizontal: 8, vertical: 4),
@@ -384,52 +475,6 @@ class _AlunosTab extends StatelessWidget {
                               fontWeight: FontWeight.w500,
                             ),
                           ),
-                        ),
-                        PopupMenuButton<String>(
-                          icon: Icon(Icons.more_vert,
-                              color: Colors.grey.shade400),
-                          onSelected: (val) {
-                            switch (val) {
-                              case 'inativar':
-                                _toggleAtivo(context, doc.id, false);
-                              case 'reativar':
-                                _toggleAtivo(context, doc.id, true);
-                              case 'remover':
-                                _remover(context, doc.id, email, alunoId);
-                            }
-                          },
-                          itemBuilder: (_) => [
-                            if (temConta && ativo)
-                              const PopupMenuItem(
-                                value: 'inativar',
-                                child: Row(children: [
-                                  Icon(Icons.block,
-                                      color: Colors.orange, size: 18),
-                                  SizedBox(width: 10),
-                                  Text('Inativar'),
-                                ]),
-                              ),
-                            if (temConta && !ativo)
-                              const PopupMenuItem(
-                                value: 'reativar',
-                                child: Row(children: [
-                                  Icon(Icons.check_circle_outline,
-                                      color: Colors.green, size: 18),
-                                  SizedBox(width: 10),
-                                  Text('Reativar'),
-                                ]),
-                              ),
-                            const PopupMenuItem(
-                              value: 'remover',
-                              child: Row(children: [
-                                Icon(Icons.delete_outline,
-                                    color: Colors.red, size: 18),
-                                SizedBox(width: 10),
-                                Text('Remover',
-                                    style: TextStyle(color: Colors.red)),
-                              ]),
-                            ),
-                          ],
                         ),
                       ],
                     ),
@@ -548,57 +593,73 @@ class _FormulariosTab extends StatelessWidget {
                           offset: const Offset(0, 3)),
                     ],
                   ),
-                  child: ListTile(
-                    leading: const CircleAvatar(
-                      backgroundColor: Color(0xFFE3F2FD),
-                      child: Icon(Icons.assignment_outlined,
-                          color: Colors.blueAccent),
-                    ),
-                    title: Text(titulo,
-                        style:
-                            const TextStyle(fontWeight: FontWeight.w600)),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        IconButton(
-                          icon: const Icon(Icons.picture_as_pdf_outlined,
-                              color: Colors.green),
-                          tooltip: 'Relatório de Notas',
-                          onPressed: () => showModalBottomSheet(
-                            context: context,
-                            shape: const RoundedRectangleBorder(
-                              borderRadius: BorderRadius.vertical(
-                                  top: Radius.circular(20)),
+                        Row(
+                          children: [
+                            const CircleAvatar(
+                              backgroundColor: Color(0xFFE3F2FD),
+                              child: Icon(Icons.assignment_outlined,
+                                  color: Colors.blueAccent),
                             ),
-                            builder: (_) => _RelatorioSheet(
-                              turmaId: turmaId,
-                              turmaNome: turmaNome,
-                              formularioId: doc.id,
-                              tituloFormulario: titulo,
-                            ),
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.qr_code,
-                              color: Colors.blueAccent),
-                          tooltip: 'Gerar QR Code',
-                          onPressed: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => QrCodePage(
-                                formularioId: doc.id,
-                                formularioTitulo: titulo,
-                                turmaId: turmaId,
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                titulo,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 15),
                               ),
                             ),
-                          ),
+                          ],
                         ),
-                        IconButton(
-                          icon: const Icon(Icons.delete_outline,
-                              color: Colors.redAccent),
-                          tooltip: 'Remover da turma',
-                          onPressed: () =>
-                              _remover(context, doc.id, titulo),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.picture_as_pdf_outlined,
+                                  color: Colors.green),
+                              tooltip: 'Relatório de Notas',
+                              onPressed: () => showModalBottomSheet(
+                                context: context,
+                                shape: const RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.vertical(
+                                      top: Radius.circular(20)),
+                                ),
+                                builder: (_) => _RelatorioSheet(
+                                  turmaId: turmaId,
+                                  turmaNome: turmaNome,
+                                  formularioId: doc.id,
+                                  tituloFormulario: titulo,
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.qr_code,
+                                  color: Colors.blueAccent),
+                              tooltip: 'Gerar QR Code',
+                              onPressed: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => QrCodePage(
+                                    formularioId: doc.id,
+                                    formularioTitulo: titulo,
+                                    turmaId: turmaId,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.delete_outline,
+                                  color: Colors.redAccent),
+                              tooltip: 'Remover da turma',
+                              onPressed: () =>
+                                  _remover(context, doc.id, titulo),
+                            ),
+                          ],
                         ),
                       ],
                     ),
@@ -964,16 +1025,17 @@ class _InfoBadge extends StatelessWidget {
   }
 }
 
-Future<List<Map<String, dynamic>>> _carregarNotasRelatorio({
+/// Retorna dados do relatório incluindo respostas formatadas por aluno.
+/// Cada mapa tem: nome, email, nota, data, respostas (List ou null).
+Future<Map<String, dynamic>> _carregarNotasRelatorio({
   required String turmaId,
   required String formularioId,
 }) async {
-  final pergsSnap = await FormulariosDb.getPerguntasSnap(formularioId);
+  final perguntasOrdenadas = await FormulariosDb.getPerguntas(formularioId);
   final perguntas = <String, Map<String, dynamic>>{};
-  for (final d in pergsSnap.docs) {
-    final data = d.data() as Map<String, dynamic>;
-    final pid = data['pergunta_id'] as String?;
-    if (pid != null) perguntas[pid] = data;
+  for (final p in perguntasOrdenadas) {
+    final pid = p['pergunta_id'] as String?;
+    if (pid != null) perguntas[pid] = p;
   }
 
   final alunosSnap = await TurmasDb.watchAlunos(turmaId).first;
@@ -985,7 +1047,7 @@ Future<List<Map<String, dynamic>>> _carregarNotasRelatorio({
     if (alunoId != null) respostasByAluno[alunoId] = data;
   }
 
-  final result = <Map<String, dynamic>>[];
+  final alunos = <Map<String, dynamic>>[];
   for (final alunoDoc in alunosSnap.docs) {
     final alunoData = alunoDoc.data() as Map<String, dynamic>;
     final email = (alunoData['email'] as String?) ?? alunoDoc.id;
@@ -993,58 +1055,90 @@ Future<List<Map<String, dynamic>>> _carregarNotasRelatorio({
     final alunoId = alunoData['aluno_id'] as String?;
 
     if (alunoId == null) {
-      result.add({'nome': nomeBase ?? email, 'email': email, 'nota': null, 'data': null});
+      alunos.add({'nome': nomeBase ?? email, 'email': email, 'nota': null, 'data': null, 'respostas': null});
       continue;
     }
 
     final resposta = respostasByAluno[alunoId];
     if (resposta == null) {
-      result.add({'nome': nomeBase ?? email, 'email': email, 'nota': null, 'data': null});
+      alunos.add({'nome': nomeBase ?? email, 'email': email, 'nota': null, 'data': null, 'respostas': null});
       continue;
     }
 
     final nome = (resposta['aluno_nome'] as String?) ?? nomeBase ?? email;
-
     final respostas =
         List<Map<String, dynamic>>.from(resposta['respostas'] ?? []);
+
     double totalPeso = 0;
     double totalNota = 0;
 
+    final respostasFormatadas = <Map<String, dynamic>>[];
     for (final r in respostas) {
       final pergId = r['pergunta_id'] as String?;
       final tipo = (r['tipo'] as String?) ?? '';
       final peso = (r['peso'] as num?)?.toDouble() ?? 1.0;
       final valor = r['valor'];
       final perg = pergId != null ? perguntas[pergId] : null;
+      final titulo = (r['titulo'] as String?) ?? (perg?['titulo'] as String?) ?? '—';
 
+      String valorFmt;
       switch (tipo) {
         case 'escala':
           totalPeso += peso;
           totalNota += ((valor as num?)?.toDouble() ?? 0) * peso;
+          valorFmt = '${(valor as num).round()} / 10';
         case 'sim_nao':
+          final correta = perg?['resposta_correta'] as String?;
+          if (correta != null) {
+            totalPeso += peso;
+            totalNota += (valor == correta) ? peso * 10.0 : 0;
+          }
+          valorFmt = valor?.toString() ?? '—';
         case 'verdadeiro_falso':
           final correta = perg?['resposta_correta'] as String?;
-          if (correta == null) break;
-          totalPeso += peso;
-          totalNota += (valor == correta) ? peso * 10.0 : 0;
+          if (correta != null) {
+            totalPeso += peso;
+            totalNota += (valor == correta) ? peso * 10.0 : 0;
+          }
+          valorFmt = valor == 'verdadeiro'
+              ? 'Verdadeiro'
+              : valor == 'falso'
+                  ? 'Falso'
+                  : '—';
         case 'multipla_escolha':
           final correta = perg?['opcao_correta'];
-          if (correta == null) break;
-          totalPeso += peso;
-          totalNota += (valor == correta) ? peso * 10.0 : 0;
+          if (correta != null) {
+            totalPeso += peso;
+            totalNota += (valor == correta) ? peso * 10.0 : 0;
+          }
+          final opcoes = List<String>.from(perg?['opcoes'] ?? []);
+          final idx = valor is int ? valor : int.tryParse(valor?.toString() ?? '');
+          valorFmt = (idx != null && idx >= 0 && idx < opcoes.length)
+              ? opcoes[idx]
+              : '—';
         default:
-          break;
+          valorFmt = valor?.toString() ?? '—';
       }
+
+      respostasFormatadas.add({'titulo': titulo, 'tipo': tipo, 'valor_formatado': valorFmt});
     }
 
     final media = totalPeso > 0 ? totalNota / totalPeso : null;
     final respondidoEm =
-        (resposta['respondido_em'] as dynamic)?.toDate() as DateTime?;
-    result.add(
-        {'nome': nome, 'email': email, 'nota': media, 'data': respondidoEm});
+        (resposta['respondido_em'] as Timestamp?)?.toDate();
+    alunos.add({
+      'nome': nome,
+      'email': email,
+      'nota': media,
+      'data': respondidoEm,
+      'respostas': respostasFormatadas,
+    });
   }
 
-  return result;
+  return {
+    'perguntas': perguntasOrdenadas,
+    'alunos': alunos,
+  };
 }
 
 class _RelatorioSheet extends StatefulWidget {
@@ -1071,13 +1165,18 @@ class _RelatorioSheetState extends State<_RelatorioSheet> {
   Future<void> _gerarPdf() async {
     setState(() => _loadingPdf = true);
     try {
-      final alunos = await _carregarNotasRelatorio(
+      final relatorio = await _carregarNotasRelatorio(
         turmaId: widget.turmaId,
         formularioId: widget.formularioId,
       );
+      final perguntas =
+          List<Map<String, dynamic>>.from(relatorio['perguntas'] as List);
+      final alunos =
+          List<Map<String, dynamic>>.from(relatorio['alunos'] as List);
       await PdfService.gerarNotasFormulario(
         tituloFormulario: widget.tituloFormulario,
         turmaNome: widget.turmaNome,
+        perguntas: perguntas,
         alunos: alunos,
       );
     } catch (e) {
@@ -1099,14 +1198,19 @@ class _RelatorioSheetState extends State<_RelatorioSheet> {
       final profEmail = AuthService.currentUser?.email ?? '';
       if (profEmail.isEmpty) throw Exception('E-mail não encontrado.');
 
-      final alunos = await _carregarNotasRelatorio(
+      final relatorio = await _carregarNotasRelatorio(
         turmaId: widget.turmaId,
         formularioId: widget.formularioId,
       );
+      final perguntas =
+          List<Map<String, dynamic>>.from(relatorio['perguntas'] as List);
+      final alunos =
+          List<Map<String, dynamic>>.from(relatorio['alunos'] as List);
 
       final pdfBytes = await PdfService.gerarNotasFormularioBytes(
         tituloFormulario: widget.tituloFormulario,
         turmaNome: widget.turmaNome,
+        perguntas: perguntas,
         alunos: alunos,
       );
 

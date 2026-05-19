@@ -32,8 +32,10 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final displayName =
-        _nomeProfessor ?? AuthService.currentUser?.email ?? 'Usuário';
+    final raw = _nomeProfessor ?? AuthService.currentUser?.email ?? 'Usuário';
+    final displayName = raw.isEmpty
+        ? raw
+        : raw[0].toUpperCase() + raw.substring(1).toLowerCase();
 
     return Scaffold(
       backgroundColor: const Color(0xFFF0F2F5),
@@ -139,26 +141,6 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
 
-          Padding(
-            padding: const EdgeInsets.all(20.0),
-            child: Container(
-              padding: const EdgeInsets.all(15),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(15),
-              ),
-              child: const Row(
-                children: [
-                  Icon(Icons.cloud_done, color: Colors.green),
-                  SizedBox(width: 15),
-                  Text(
-                    'Banco de dados online',
-                    style: TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                ],
-              ),
-            ),
-          ),
         ],
       ),
     );

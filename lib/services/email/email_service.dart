@@ -51,6 +51,32 @@ class EmailService {
     await send(message, _smtpServer);
   }
 
+  /// Envia email de convite ao aluno informando que foi adicionado a uma turma.
+  static Future<void> enviarConviteAluno({
+    required String destinatario,
+    required String turmaNome,
+  }) async {
+    final message = Message()
+      ..from = Address(_smtpEmail, _nomeRemetente)
+      ..recipients.add(destinatario)
+      ..subject = 'Convite para a turma "$turmaNome" — SATCCO App'
+      ..html =
+          '''
+        <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto;">
+          <h2 style="color: #2E7D32;">SATCCO App</h2>
+          <p>Você foi convidado(a) para participar da turma
+             <strong>$turmaNome</strong>.</p>
+          <p>Acesse o aplicativo com o seu e-mail para visualizar e responder
+             as avaliações disponíveis.</p>
+          <p style="color: #666; font-size: 12px;">
+            Caso não reconheça este convite, pode ignorar este e-mail.
+          </p>
+        </div>
+      ''';
+
+    await send(message, _smtpServer);
+  }
+
   /// Envia o relatório de notas de um formulário para o professor.
   static Future<void> enviarRelatorioFormulario({
     required String destinatario,

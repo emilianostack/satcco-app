@@ -71,15 +71,22 @@ class _PergunatasPageState extends State<PergunatasPage> {
             .map((c) => c.text.trim())
             .where((o) => o.isNotEmpty)
             .toList();
-        if (opcoes.length < 2 || _opcaoCorretaIndex == null) return;
+        if (opcoes.length < 2) return;
         dadosValidos['opcoes'] = opcoes;
-        dadosValidos['opcao_correta'] = _opcaoCorretaIndex;
+        if (_opcaoCorretaIndex != null) {
+          dadosValidos['opcao_correta'] = _opcaoCorretaIndex;
+        } else {
+          dadosParaRemover['opcao_correta'] = FieldValue.delete();
+        }
         dadosParaRemover['resposta_correta'] = FieldValue.delete();
         break;
 
       case 'verdadeiro_falso':
-        if (_respostaCorretaVF == null) return;
-        dadosValidos['resposta_correta'] = _respostaCorretaVF;
+        if (_respostaCorretaVF != null) {
+          dadosValidos['resposta_correta'] = _respostaCorretaVF;
+        } else {
+          dadosParaRemover['resposta_correta'] = FieldValue.delete();
+        }
         dadosParaRemover['opcoes'] = FieldValue.delete();
         dadosParaRemover['opcao_correta'] = FieldValue.delete();
         break;
@@ -345,11 +352,16 @@ class _PergunatasPageState extends State<PergunatasPage> {
                         if (_tipoSelecionado == 'verdadeiro_falso') ...[
                           const SizedBox(height: 20),
                           const Text(
-                            'Qual é a afirmação correta?',
+                            'Resposta correta (opcional):',
                             style: TextStyle(
                               fontWeight: FontWeight.w600,
                               fontSize: 14,
                             ),
+                          ),
+                          const SizedBox(height: 4),
+                          const Text(
+                            'Deixe em branco para questão subjetiva (sem nota automática).',
+                            style: TextStyle(fontSize: 12, color: Colors.grey),
                           ),
                           const SizedBox(height: 12),
                           Row(
@@ -361,9 +373,13 @@ class _PergunatasPageState extends State<PergunatasPage> {
                                   color: Colors.green,
                                   selected: _respostaCorretaVF == 'verdadeiro',
                                   onTap: () => setModalState(() {
-                                    _respostaCorretaVF = 'verdadeiro';
+                                    _respostaCorretaVF =
+                                        _respostaCorretaVF == 'verdadeiro'
+                                            ? null
+                                            : 'verdadeiro';
                                     setState(
-                                      () => _respostaCorretaVF = 'verdadeiro',
+                                      () => _respostaCorretaVF =
+                                          _respostaCorretaVF,
                                     );
                                   }),
                                 ),
@@ -376,9 +392,13 @@ class _PergunatasPageState extends State<PergunatasPage> {
                                   color: Colors.redAccent,
                                   selected: _respostaCorretaVF == 'falso',
                                   onTap: () => setModalState(() {
-                                    _respostaCorretaVF = 'falso';
+                                    _respostaCorretaVF =
+                                        _respostaCorretaVF == 'falso'
+                                            ? null
+                                            : 'falso';
                                     setState(
-                                      () => _respostaCorretaVF = 'falso',
+                                      () => _respostaCorretaVF =
+                                          _respostaCorretaVF,
                                     );
                                   }),
                                 ),
@@ -422,7 +442,7 @@ class _PergunatasPageState extends State<PergunatasPage> {
                               Text(
                                 _opcaoCorretaIndex != null
                                     ? 'Opção ${_opcaoCorretaIndex! + 1} marcada como correta'
-                                    : 'Toque no ○ para marcar a resposta correta',
+                                    : 'Toque no ○ para marcar a correta (opcional)',
                                 style: TextStyle(
                                   fontSize: 12,
                                   color: _opcaoCorretaIndex != null
@@ -576,30 +596,6 @@ class _PergunatasPageState extends State<PergunatasPage> {
                       ),
                     ),
                     onPressed: () async {
-                      if (_tipoSelecionado == 'multipla_escolha' &&
-                          _opcaoCorretaIndex == null) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text(
-                              'Selecione a opção correta antes de salvar.',
-                            ),
-                            backgroundColor: Colors.orange,
-                          ),
-                        );
-                        return;
-                      }
-                      if (_tipoSelecionado == 'verdadeiro_falso' &&
-                          _respostaCorretaVF == null) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text(
-                              'Indique se a afirmação é Verdadeira ou Falsa.',
-                            ),
-                            backgroundColor: Colors.orange,
-                          ),
-                        );
-                        return;
-                      }
                       await _salvarPergunta(docId: doc?.id);
                       if (context.mounted) Navigator.pop(context);
                     },
@@ -641,7 +637,14 @@ class _PergunatasPageState extends State<PergunatasPage> {
             return Center(child: Text('Erro: ${snapshot.error}'));
           }
 
-          final docs = snapshot.data?.docs ?? [];
+          final rawDocs = snapshot.data?.docs ?? [];
+          final docs = [...rawDocs]..sort((a, b) {
+              final aTs = ((a.data() as Map)['criado_em'] as Timestamp?)
+                  ?.microsecondsSinceEpoch ?? 0;
+              final bTs = ((b.data() as Map)['criado_em'] as Timestamp?)
+                  ?.microsecondsSinceEpoch ?? 0;
+              return aTs.compareTo(bTs);
+            });
 
           if (docs.isEmpty) {
             return const EmptyState(

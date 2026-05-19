@@ -8,11 +8,13 @@ class PdfService {
   static Future<void> gerarNotasFormulario({
     required String tituloFormulario,
     required String turmaNome,
+    required List<Map<String, dynamic>> perguntas,
     required List<Map<String, dynamic>> alunos,
   }) async {
     final pdf = await _buildNotasDoc(
       tituloFormulario: tituloFormulario,
       turmaNome: turmaNome,
+      perguntas: perguntas,
       alunos: alunos,
     );
     await Printing.layoutPdf(
@@ -25,11 +27,13 @@ class PdfService {
   static Future<Uint8List> gerarNotasFormularioBytes({
     required String tituloFormulario,
     required String turmaNome,
+    required List<Map<String, dynamic>> perguntas,
     required List<Map<String, dynamic>> alunos,
   }) async {
     final pdf = await _buildNotasDoc(
       tituloFormulario: tituloFormulario,
       turmaNome: turmaNome,
+      perguntas: perguntas,
       alunos: alunos,
     );
     return pdf.save();
@@ -38,6 +42,7 @@ class PdfService {
   static Future<pw.Document> _buildNotasDoc({
     required String tituloFormulario,
     required String turmaNome,
+    required List<Map<String, dynamic>> perguntas,
     required List<Map<String, dynamic>> alunos,
   }) async {
     final font = await PdfGoogleFonts.notoSansRegular();
@@ -74,6 +79,7 @@ class PdfService {
           ],
         ),
         build: (ctx) => [
+          // --- Tabela resumo ---
           pw.Table(
             border: pw.TableBorder.all(color: PdfColors.grey300, width: 0.5),
             columnWidths: const {
@@ -113,11 +119,110 @@ class PdfService {
               }),
             ],
           ),
-          pw.SizedBox(height: 12),
+          pw.SizedBox(height: 8),
           pw.Text(
             'Total: ${alunos.length} aluno${alunos.length != 1 ? 's' : ''}',
             style: pw.TextStyle(fontSize: 9, color: PdfColors.grey600),
           ),
+
+          // --- Detalhes por aluno ---
+          if (perguntas.isNotEmpty) ...[
+            pw.SizedBox(height: 20),
+            pw.Text(
+              'Respostas por Aluno',
+              style: pw.TextStyle(
+                fontSize: 13,
+                fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+            pw.SizedBox(height: 8),
+            ...alunos.where((a) => a['respostas'] != null).expand((a) {
+              final nome = a['nome'] as String? ?? '—';
+              final email = a['email'] as String? ?? '—';
+              final nota = a['nota'] as double?;
+              final respostas =
+                  List<Map<String, dynamic>>.from(a['respostas'] as List);
+
+              return [
+                pw.Container(
+                  padding: const pw.EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: const pw.BoxDecoration(
+                    color: PdfColors.blueGrey50,
+                  ),
+                  child: pw.Row(
+                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                    children: [
+                      pw.Column(
+                        crossAxisAlignment: pw.CrossAxisAlignment.start,
+                        children: [
+                          pw.Text(
+                            nome,
+                            style: pw.TextStyle(
+                              fontWeight: pw.FontWeight.bold,
+                              fontSize: 11,
+                            ),
+                          ),
+                          pw.Text(
+                            email,
+                            style: pw.TextStyle(
+                              fontSize: 9,
+                              color: PdfColors.grey700,
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (nota != null)
+                        pw.Text(
+                          '${nota.toStringAsFixed(1)} / 10',
+                          style: pw.TextStyle(
+                            fontWeight: pw.FontWeight.bold,
+                            fontSize: 11,
+                            color: _notaColor(nota),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                pw.Table(
+                  border:
+                      pw.TableBorder.all(color: PdfColors.grey300, width: 0.5),
+                  columnWidths: const {
+                    0: pw.FlexColumnWidth(5),
+                    1: pw.FlexColumnWidth(5),
+                  },
+                  children: [
+                    pw.TableRow(
+                      decoration:
+                          const pw.BoxDecoration(color: PdfColors.grey200),
+                      children: [
+                        _cell('Pergunta', bold: true),
+                        _cell('Resposta', bold: true),
+                      ],
+                    ),
+                    ...respostas.asMap().entries.map((re) {
+                      final ri = re.key;
+                      final r = re.value;
+                      final titulo =
+                          (r['titulo'] as String?) ?? 'Pergunta ${ri + 1}';
+                      final valorFmt = r['valor_formatado'] as String? ?? '—';
+                      final bg = ri.isEven ? PdfColors.white : PdfColors.grey50;
+                      return pw.TableRow(
+                        decoration: pw.BoxDecoration(color: bg),
+                        children: [
+                          _cell(titulo),
+                          _cell(valorFmt),
+                        ],
+                      );
+                    }),
+                  ],
+                ),
+                pw.SizedBox(height: 14),
+              ];
+            }),
+          ],
         ],
         footer: (ctx) => pw.Align(
           alignment: pw.Alignment.centerRight,

@@ -156,4 +156,27 @@ class TurmasDb {
           .collection('formularios')
           .doc(formularioId)
           .delete();
+
+  /// Atualiza o título do formulário em todas as turmas do professor que o têm atribuído.
+  static Future<void> atualizarTituloFormulario({
+    required String formularioId,
+    required String novoTitulo,
+    required String professorId,
+  }) async {
+    final turmasSnap =
+        await _col.where('professor_id', isEqualTo: professorId).get();
+    final batch = _db.batch();
+
+    for (final turmaDoc in turmasSnap.docs) {
+      final formRef = turmaDoc.reference
+          .collection('formularios')
+          .doc(formularioId);
+      final formSnap = await formRef.get();
+      if (formSnap.exists) {
+        batch.update(formRef, {'titulo': novoTitulo});
+      }
+    }
+
+    await batch.commit();
+  }
 }

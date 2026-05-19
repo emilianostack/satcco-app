@@ -111,7 +111,10 @@ class _HomeAlunoPageState extends State<HomeAlunoPage> {
 
   @override
   Widget build(BuildContext context) {
-    final displayName = _nomeAluno ?? AuthService.currentUser?.email ?? 'Aluno';
+    final raw = _nomeAluno ?? AuthService.currentUser?.email ?? 'Aluno';
+    final displayName = raw.isEmpty
+        ? raw
+        : raw[0].toUpperCase() + raw.substring(1).toLowerCase();
 
     return DefaultTabController(
       length: 2,
