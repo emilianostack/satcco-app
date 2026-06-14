@@ -5,12 +5,17 @@ class FormulariosDb {
   static CollectionReference get _col => _db.collection('formularios');
 
   static Stream<QuerySnapshot> watchByProfessor(String professorId) =>
-      _col.where('professor_id', isEqualTo: professorId).snapshots();
+      _col
+          .where('professor_id', isEqualTo: professorId)
+          .orderBy('criado_em', descending: true) // Ordenação por data
+          .snapshots();
 
   static Future<List<DocumentSnapshot>> getByProfessor(
       String professorId) async {
-    final snap =
-        await _col.where('professor_id', isEqualTo: professorId).get();
+    final snap = await _col
+        .where('professor_id', isEqualTo: professorId)
+        .orderBy('criado_em', descending: true) // Ordenação por data
+        .get();
     return snap.docs;
   }
 
@@ -59,6 +64,21 @@ class FormulariosDb {
         'titulo': titulo,
         'total_perguntas': perguntas.length,
       });
+
+      // Sincroniza o novo título com os formulários já atribuídos às turmas
+      final turmasSnap = await _db
+          .collection('turmas')
+          .where('professor_id', isEqualTo: professorId)
+          .get();
+
+      for (final turma in turmasSnap.docs) {
+        final formTurmaRef = turma.reference.collection('formularios').doc(formularioId);
+        final formTurmaSnap = await formTurmaRef.get();
+        if (formTurmaSnap.exists) {
+          batch.update(formTurmaRef, {'titulo': titulo});
+        }
+      }
+
       final existentes = await formRef.collection('perguntas').get();
       for (final doc in existentes.docs) {
         batch.delete(doc.reference);
@@ -121,10 +141,10 @@ class FormulariosDb {
   static Future<String?> formularioQueUsaPergunta(
       String professorId, String perguntaId) async {
     final forms =
-        await _col.where('professor_id', isEqualTo: professorId).get();
+    await _col.where('professor_id', isEqualTo: professorId).get();
     for (final form in forms.docs) {
       final snap =
-          await form.reference.collection('perguntas').doc(perguntaId).get();
+      await form.reference.collection('perguntas').doc(perguntaId).get();
       if (snap.exists) {
         return (form.data() as Map<String, dynamic>)['titulo'] as String? ??
             'um formulário';
