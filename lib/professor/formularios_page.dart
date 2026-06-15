@@ -1,9 +1,10 @@
-import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
 import 'criar_formulario_page.dart';
 import '../widgets/empty_state.dart';
 import '../services/auth_service.dart';
 import '../services/database/formularios_db.dart';
+import '../aluno/responder_formulario_page.dart';
 
 class FormulariosPage extends StatelessWidget {
   const FormulariosPage({super.key});
@@ -73,7 +74,14 @@ class FormulariosPage extends StatelessWidget {
             return Center(child: Text('Erro: ${snapshot.error}'));
           }
 
-          final docs = snapshot.data?.docs ?? [];
+          final rawDocs = snapshot.data?.docs ?? [];
+          final docs = [...rawDocs]..sort((a, b) {
+              final aTs = ((a.data() as Map)['criado_em'] as Timestamp?)
+                  ?.microsecondsSinceEpoch ?? 0;
+              final bTs = ((b.data() as Map)['criado_em'] as Timestamp?)
+                  ?.microsecondsSinceEpoch ?? 0;
+              return aTs.compareTo(bTs);
+            });
 
           if (docs.isEmpty) {
             return const EmptyState(
@@ -105,49 +113,82 @@ class FormulariosPage extends StatelessWidget {
                     ),
                   ],
                 ),
-                child: ListTile(
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 10,
-                  ),
-                  leading: const CircleAvatar(
-                    backgroundColor: Color(0xFFE3F2FD),
-                    child: Icon(Icons.assignment_outlined,
-                        color: Colors.blueAccent),
-                  ),
-                  title: Text(
-                    titulo,
-                    style: const TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                  subtitle: Text(
-                    '$totalPerguntas pergunta${totalPerguntas == 1 ? '' : 's'}',
-                    style: const TextStyle(fontSize: 12, color: Colors.grey),
-                  ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      IconButton(
-                        icon: const Icon(Icons.edit_outlined,
-                            color: Colors.blueAccent),
-                        tooltip: 'Editar',
-                        onPressed: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => CriarFormularioPage(
-                                formularioId: doc.id,
-                                tituloInicial: titulo,
-                              ),
+                      Row(
+                        children: [
+                          const CircleAvatar(
+                            backgroundColor: Color(0xFFE3F2FD),
+                            child: Icon(Icons.assignment_outlined,
+                                color: Colors.blueAccent),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  titulo,
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 15),
+                                ),
+                                Text(
+                                  '$totalPerguntas pergunta${totalPerguntas == 1 ? '' : 's'}',
+                                  style: const TextStyle(
+                                      fontSize: 12, color: Colors.grey),
+                                ),
+                              ],
                             ),
-                          );
-                        },
+                          ),
+                        ],
                       ),
-                      IconButton(
-                        icon: const Icon(Icons.delete_outline,
-                            color: Colors.redAccent),
-                        tooltip: 'Remover',
-                        onPressed: () =>
-                            _confirmarDelecao(context, doc.id, titulo),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.science_outlined,
+                                color: Colors.orange),
+                            tooltip: 'Testar',
+                            onPressed: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => ResponderFormularioPage(
+                                    formularioId: doc.id,
+                                    modoTeste: true,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.edit_outlined,
+                                color: Colors.blueAccent),
+                            tooltip: 'Editar',
+                            onPressed: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => CriarFormularioPage(
+                                    formularioId: doc.id,
+                                    tituloInicial: titulo,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.delete_outline,
+                                color: Colors.redAccent),
+                            tooltip: 'Remover',
+                            onPressed: () =>
+                                _confirmarDelecao(context, doc.id, titulo),
+                          ),
+                        ],
                       ),
                     ],
                   ),

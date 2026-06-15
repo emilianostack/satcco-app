@@ -8,11 +8,13 @@ class PdfService {
   static Future<void> gerarNotasFormulario({
     required String tituloFormulario,
     required String turmaNome,
+    required List<Map<String, dynamic>> perguntas,
     required List<Map<String, dynamic>> alunos,
   }) async {
     final pdf = await _buildNotasDoc(
       tituloFormulario: tituloFormulario,
       turmaNome: turmaNome,
+      perguntas: perguntas,
       alunos: alunos,
     );
     await Printing.layoutPdf(
@@ -25,11 +27,13 @@ class PdfService {
   static Future<Uint8List> gerarNotasFormularioBytes({
     required String tituloFormulario,
     required String turmaNome,
+    required List<Map<String, dynamic>> perguntas,
     required List<Map<String, dynamic>> alunos,
   }) async {
     final pdf = await _buildNotasDoc(
       tituloFormulario: tituloFormulario,
       turmaNome: turmaNome,
+      perguntas: perguntas,
       alunos: alunos,
     );
     return pdf.save();
@@ -38,6 +42,7 @@ class PdfService {
   static Future<pw.Document> _buildNotasDoc({
     required String tituloFormulario,
     required String turmaNome,
+    required List<Map<String, dynamic>> perguntas,
     required List<Map<String, dynamic>> alunos,
   }) async {
     final font = await PdfGoogleFonts.notoSansRegular();
@@ -114,7 +119,7 @@ class PdfService {
               }),
             ],
           ),
-          pw.SizedBox(height: 12),
+          pw.SizedBox(height: 8),
           pw.Text(
             'Total: ${alunos.length} aluno${alunos.length != 1 ? 's' : ''}',
             style: pw.TextStyle(fontSize: 9, color: PdfColors.grey600),

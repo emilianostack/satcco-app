@@ -9,10 +9,14 @@ class ResponderFormularioPage extends StatefulWidget {
   final String? sessaoId;
   final String formularioId;
 
+  /// Quando true, as respostas não são gravadas (modo de pré-visualização do professor).
+  final bool modoTeste;
+
   const ResponderFormularioPage({
     super.key,
     this.sessaoId,
     required this.formularioId,
+    this.modoTeste = false,
   });
 
   @override
@@ -39,14 +43,16 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
   }
 
   Future<void> _carregarDados() async {
-    final respostaDoc = await RespostasDb.getRespostaById(_docRespostaId);
-    if (respostaDoc.exists) {
-      final nota = ((respostaDoc.data() as Map<String, dynamic>?)?['nota'] as num?)
-          ?.toDouble();
-      if (mounted) {
-        setState(() { _jaRespondeu = true; _nota = nota; _loading = false; });
+    if (!widget.modoTeste) {
+      final respostaDoc = await RespostasDb.getRespostaById(_docRespostaId);
+      if (respostaDoc.exists) {
+        final nota = ((respostaDoc.data() as Map<String, dynamic>?)?['nota'] as num?)
+            ?.toDouble();
+        if (mounted) {
+          setState(() { _jaRespondeu = true; _nota = nota; _loading = false; });
+        }
+        return;
       }
-      return;
     }
 
     final formDoc = await FormulariosDb.getFormulario(widget.formularioId);
@@ -81,8 +87,9 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
   }
 
   /// Calcula a nota automática (0–10) com base nos pesos e respostas corretas.
-  /// Retorna null se não houver perguntas avaliativas (peso zero ou sem resposta certa).
-  double? _calcularNota() { // Adicionado o '?' para permitir nota nula (sem nota)
+  /// Perguntas do tipo 'texto' e questões sem resposta correta definida não entram no cálculo.
+  /// Retorna null quando nenhuma pergunta gera nota (sem avaliação automática).
+  double? _calcularNota() {
     double earned = 0;
     double maxPossible = 0;
 
@@ -125,9 +132,7 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
       }
     }
 
-    // Se a soma dos pesos for 0 (todas peso 0 ou sem gabarito), a nota é nula
     if (maxPossible == 0) return null;
-
     return double.parse(((earned / maxPossible) * 10).toStringAsFixed(1));
   }
 
@@ -148,6 +153,15 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
     setState(() => _enviando = true);
 
     try {
+      final nota = _calcularNota();
+
+      if (widget.modoTeste) {
+        if (mounted) {
+          setState(() { _jaRespondeu = true; _enviando = false; _nota = nota; });
+        }
+        return;
+      }
+
       final user = AuthService.currentUser!;
 
       final userDoc = await UsuariosDb.getUsuario(user.uid);
@@ -166,8 +180,6 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
           'valor': _respostas[id],
         };
       }).toList();
-
-      final nota = _calcularNota();
 
       await RespostasDb.submit(
         docId: _docRespostaId,
@@ -206,26 +218,50 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
 
     if (_jaRespondeu) return _buildSucesso();
 
+    final corAppBar = widget.modoTeste ? Colors.orange : Colors.green;
+
     return Scaffold(
       backgroundColor: const Color(0xFFF0F2F5),
       appBar: AppBar(
         title: Text(_tituloFormulario, style: const TextStyle(fontSize: 16)),
         centerTitle: true,
-        backgroundColor: Colors.green,
+        backgroundColor: corAppBar,
         foregroundColor: Colors.white,
         elevation: 0,
-        automaticallyImplyLeading: false,
+        automaticallyImplyLeading: widget.modoTeste,
       ),
       body: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: () => FocusScope.of(context).unfocus(),
-        child: ListView.builder(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
-          itemCount: _perguntas.length,
-          itemBuilder: (context, index) {
-            final p = _perguntas[index];
-            return _buildPergunta(index + 1, p);
-          },
+        child: Column(
+          children: [
+            if (widget.modoTeste)
+              Container(
+                width: double.infinity,
+                color: Colors.orange.shade50,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  children: [
+                    Icon(Icons.science_outlined, size: 16, color: Colors.orange.shade800),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Modo Teste — as respostas não serão gravadas',
+                      style: TextStyle(fontSize: 12, color: Colors.orange.shade800, fontWeight: FontWeight.w500),
+                    ),
+                  ],
+                ),
+              ),
+            Expanded(
+              child: ListView.builder(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
+                itemCount: _perguntas.length,
+                itemBuilder: (context, index) {
+                  final p = _perguntas[index];
+                  return _buildPergunta(index + 1, p);
+                },
+              ),
+            ),
+          ],
         ),
       ),
       bottomNavigationBar: _buildBotaoEnviar(),
@@ -463,7 +499,7 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
         height: 52,
         child: ElevatedButton.icon(
           style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.green,
+            backgroundColor: widget.modoTeste ? Colors.orange : Colors.green,
             foregroundColor: Colors.white,
             shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(14)),
@@ -475,9 +511,11 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
                   height: 20,
                   child: CircularProgressIndicator(
                       color: Colors.white, strokeWidth: 2))
-              : const Icon(Icons.send_rounded),
+              : Icon(widget.modoTeste ? Icons.science_outlined : Icons.send_rounded),
           label: Text(
-            _enviando ? 'A enviar...' : 'Enviar Respostas',
+            _enviando
+                ? (widget.modoTeste ? 'A calcular...' : 'A enviar...')
+                : (widget.modoTeste ? 'Ver Resultado' : 'Enviar Respostas'),
             style:
                 const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
           ),
@@ -497,22 +535,33 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
             children: [
               Container(
                 padding: const EdgeInsets.all(24),
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   color: Colors.white,
                   shape: BoxShape.circle,
                 ),
-                child: const Icon(Icons.check_circle_rounded,
-                    color: Colors.green, size: 80),
+                child: Icon(
+                  widget.modoTeste ? Icons.science_outlined : Icons.check_circle_rounded,
+                  color: widget.modoTeste ? Colors.orange : Colors.green,
+                  size: 80,
+                ),
               ),
               const SizedBox(height: 28),
-              const Text(
-                'Avaliação enviada!',
-                style: TextStyle(
+              Text(
+                widget.modoTeste ? 'Resultado do Teste' : 'Avaliação enviada!',
+                style: const TextStyle(
                   fontSize: 24,
                   fontWeight: FontWeight.bold,
                   color: Colors.black87,
                 ),
               ),
+              if (widget.modoTeste)
+                const Padding(
+                  padding: EdgeInsets.only(top: 4, bottom: 8),
+                  child: Text(
+                    'Nenhuma resposta foi gravada.',
+                    style: TextStyle(color: Colors.orange, fontSize: 13),
+                  ),
+                ),
               const SizedBox(height: 16),
               if (_nota != null) ...[
                 Container(
@@ -578,10 +627,12 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(14)),
                   ),
-                  onPressed: () =>
-                      Navigator.of(context).popUntil((route) => route.isFirst),
-                  child: const Text('Voltar ao início',
-                      style: TextStyle(
+                  onPressed: () => widget.modoTeste
+                      ? Navigator.of(context).pop()
+                      : Navigator.of(context).popUntil((route) => route.isFirst),
+                  child: Text(
+                      widget.modoTeste ? 'Fechar Teste' : 'Voltar ao início',
+                      style: const TextStyle(
                           fontWeight: FontWeight.bold, fontSize: 16)),
                 ),
               ),

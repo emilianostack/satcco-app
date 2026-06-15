@@ -4,6 +4,7 @@ import '../widgets/question_type_icon.dart';
 import '../services/auth_service.dart';
 import '../services/database/formularios_db.dart';
 import '../services/database/perguntas_db.dart';
+import '../services/database/turmas_db.dart';
 
 class CriarFormularioPage extends StatefulWidget {
   final String? formularioId;
@@ -149,12 +150,22 @@ class _CriarFormularioPageState extends State<CriarFormularioPage> {
         };
       }).toList();
 
+      final novoTitulo = _tituloController.text.trim();
+
       await FormulariosDb.salvar(
         formularioId: widget.formularioId,
-        titulo: _tituloController.text.trim(),
+        titulo: novoTitulo,
         professorId: uid,
         perguntas: perguntasMaps,
       );
+
+      if (_editando) {
+        await TurmasDb.atualizarTituloFormulario(
+          formularioId: widget.formularioId!,
+          novoTitulo: novoTitulo,
+          professorId: uid,
+        );
+      }
 
       if (mounted) Navigator.pop(context);
     } catch (e) {
