@@ -79,7 +79,7 @@ class PdfService {
           ],
         ),
         build: (ctx) => [
-          // --- Tabela resumo ---
+          // Tabela de Resumo (Já existia)
           pw.Table(
             border: pw.TableBorder.all(color: PdfColors.grey300, width: 0.5),
             columnWidths: const {
@@ -125,104 +125,66 @@ class PdfService {
             style: pw.TextStyle(fontSize: 9, color: PdfColors.grey600),
           ),
 
-          // --- Detalhes por aluno ---
-          if (perguntas.isNotEmpty) ...[
-            pw.SizedBox(height: 20),
-            pw.Text(
-              'Respostas por Aluno',
-              style: pw.TextStyle(
-                fontSize: 13,
-                fontWeight: pw.FontWeight.bold,
-              ),
+          // NOVA SEÇÃO: Detalhamento de Respostas
+          pw.SizedBox(height: 24),
+          pw.Center(
+            child: pw.Text(
+              'Detalhamento de Respostas',
+              style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold),
             ),
-            pw.SizedBox(height: 8),
-            ...alunos.where((a) => a['respostas'] != null).expand((a) {
-              final nome = a['nome'] as String? ?? '—';
-              final email = a['email'] as String? ?? '—';
-              final nota = a['nota'] as double?;
-              final respostas =
-                  List<Map<String, dynamic>>.from(a['respostas'] as List);
+          ),
+          pw.SizedBox(height: 16),
 
-              return [
-                pw.Container(
-                  padding: const pw.EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  decoration: const pw.BoxDecoration(
-                    color: PdfColors.blueGrey50,
-                  ),
-                  child: pw.Row(
-                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                    children: [
-                      pw.Column(
-                        crossAxisAlignment: pw.CrossAxisAlignment.start,
-                        children: [
-                          pw.Text(
-                            nome,
-                            style: pw.TextStyle(
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 11,
-                            ),
-                          ),
-                          pw.Text(
-                            email,
-                            style: pw.TextStyle(
-                              fontSize: 9,
-                              color: PdfColors.grey700,
-                            ),
-                          ),
-                        ],
-                      ),
-                      if (nota != null)
-                        pw.Text(
-                          '${nota.toStringAsFixed(1)} / 10',
-                          style: pw.TextStyle(
-                            fontWeight: pw.FontWeight.bold,
-                            fontSize: 11,
-                            color: _notaColor(nota),
-                          ),
-                        ),
-                    ],
-                  ),
+          ...alunos.expand((a) {
+            // Busca o array de respostas que veio do banco de dados
+            final respostas = a['respostas'] as List<dynamic>?;
+
+            // Se o aluno não tiver respostas, não desenha nada para ele nesta seção
+            if (respostas == null || respostas.isEmpty) {
+              return [pw.SizedBox()];
+            }
+
+            return [
+              pw.Container(
+                margin: const pw.EdgeInsets.only(bottom: 16),
+                padding: const pw.EdgeInsets.all(12),
+                decoration: pw.BoxDecoration(
+                  color: PdfColors.grey50,
+                  border: pw.Border.all(color: PdfColors.grey300),
+                  borderRadius: const pw.BorderRadius.all(pw.Radius.circular(8)),
                 ),
-                pw.Table(
-                  border:
-                      pw.TableBorder.all(color: PdfColors.grey300, width: 0.5),
-                  columnWidths: const {
-                    0: pw.FlexColumnWidth(5),
-                    1: pw.FlexColumnWidth(5),
-                  },
+                child: pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
                   children: [
-                    pw.TableRow(
-                      decoration:
-                          const pw.BoxDecoration(color: PdfColors.grey200),
-                      children: [
-                        _cell('Pergunta', bold: true),
-                        _cell('Resposta', bold: true),
-                      ],
+                    pw.Text(
+                      'Aluno: ${a['nome'] ?? '—'}',
+                      style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold, color: PdfColors.blueAccent),
                     ),
-                    ...respostas.asMap().entries.map((re) {
-                      final ri = re.key;
-                      final r = re.value;
-                      final titulo =
-                          (r['titulo'] as String?) ?? 'Pergunta ${ri + 1}';
-                      final valorFmt = r['valor_formatado'] as String? ?? '—';
-                      final bg = ri.isEven ? PdfColors.white : PdfColors.grey50;
-                      return pw.TableRow(
-                        decoration: pw.BoxDecoration(color: bg),
-                        children: [
-                          _cell(titulo),
-                          _cell(valorFmt),
-                        ],
+                    pw.SizedBox(height: 8),
+                    // Loop pelas perguntas que o aluno respondeu
+                    ...respostas.map((r) {
+                      final respMap = r as Map<String, dynamic>;
+                      final titulo = respMap['titulo']?.toString() ?? 'Pergunta sem título';
+                      // Tenta pegar a chave 'valor' (que configuramos antes) ou 'resposta'
+                      final valor = respMap['valor']?.toString() ?? respMap['resposta']?.toString() ?? 'Sem resposta';
+
+                      return pw.Padding(
+                        padding: const pw.EdgeInsets.only(bottom: 8),
+                        child: pw.Column(
+                          crossAxisAlignment: pw.CrossAxisAlignment.start,
+                          children: [
+                            pw.Text('Q: $titulo', style: pw.TextStyle(fontSize: 10, color: PdfColors.grey800)),
+                            pw.SizedBox(height: 2),
+                            pw.Text('R: $valor', style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold)),
+                          ],
+                        ),
                       );
-                    }),
+                    }).toList(),
                   ],
                 ),
-                pw.SizedBox(height: 14),
-              ];
-            }),
-          ],
+              ),
+            ];
+          }).toList(),
         ],
         footer: (ctx) => pw.Align(
           alignment: pw.Alignment.centerRight,
@@ -428,11 +390,11 @@ class PdfService {
   }
 
   static pw.Widget _cell(
-    String text, {
-    bool bold = false,
-    bool headerRow = false,
-    PdfColor? notaColor,
-  }) {
+      String text, {
+        bool bold = false,
+        bool headerRow = false,
+        PdfColor? notaColor,
+      }) {
     return pw.Padding(
       padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 6),
       child: pw.Text(

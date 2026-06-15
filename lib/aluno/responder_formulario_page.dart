@@ -99,23 +99,34 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
       final peso = (p['peso'] as num?)?.toDouble() ?? 1.0;
       final valor = _respostas[id];
 
+      // Se a questão tem peso zero, ela é totalmente ignorada no cálculo
+      if (peso <= 0) continue;
+
       switch (tipo) {
         case 'escala':
           earned += ((valor as double? ?? 0.0) / 10.0) * peso;
           maxPossible += peso;
+          break; // Inclusão dos breaks para evitar vazamento de blocos
+
         case 'sim_nao':
         case 'verdadeiro_falso':
           final correta = p['resposta_correta'] as String?;
-          if (correta != null) {
+          // Trata a "opção de não ter resposta certa" ignorando strings vazias
+          if (correta != null && correta.trim().isNotEmpty) {
             if (valor == correta) earned += peso;
             maxPossible += peso;
           }
+          break;
+
         case 'multipla_escolha':
           final correta = p['opcao_correta'];
-          if (correta != null) {
+          // Trata a "opção de não ter resposta certa" ignorando valores -1
+          if (correta != null && correta != -1) {
             if (valor == correta) earned += peso;
             maxPossible += peso;
           }
+          break;
+
         case 'texto':
           break;
       }

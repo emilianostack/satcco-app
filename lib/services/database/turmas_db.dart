@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../email/email_service.dart'; // Importação do serviço de e-mail
 
 class TurmasDb {
   static FirebaseFirestore get _db => FirebaseFirestore.instance;
@@ -13,10 +14,10 @@ class TurmasDb {
   /// Verifica se já existe turma com este nome para o professor.
   /// Passa [excludeDocId] ao renomear para ignorar a própria turma.
   static Future<bool> nomeJaExiste(
-    String professorId,
-    String nome, {
-    String? excludeDocId,
-  }) async {
+      String professorId,
+      String nome, {
+        String? excludeDocId,
+      }) async {
     final snap = await _col
         .where('professor_id', isEqualTo: professorId)
         .where('nome', isEqualTo: nome)
@@ -79,7 +80,7 @@ class TurmasDb {
       _col.doc(turmaId).collection('alunos').doc(email).get();
 
   static Future<void> toggleAtivoAluno(
-          String turmaId, String docId, bool ativo) =>
+      String turmaId, String docId, bool ativo) =>
       _col
           .doc(turmaId)
           .collection('alunos')
@@ -96,7 +97,7 @@ class TurmasDb {
   }) async {
     final batch = _db.batch();
     final alunoRef =
-        _col.doc(turmaId).collection('alunos').doc(email);
+    _col.doc(turmaId).collection('alunos').doc(email);
 
     batch.set(alunoRef, {
       'email': email,
@@ -118,6 +119,19 @@ class TurmasDb {
     }
 
     await batch.commit();
+
+    // Rotina de disparo de e-mail ao salvar o convite no banco
+    try {
+      final turmaDoc = await getTurma(turmaId);
+      final turmaNome = (turmaDoc.data() as Map<String, dynamic>?)?['nome'] as String? ?? 'uma turma';
+
+      await EmailService.enviarEmailConvite(
+        destinatario: email,
+        turmaNome: turmaNome,
+      );
+    } catch (e) {
+      print('Aviso: Falha ao enviar o e-mail de convite para $email. Erro: $e');
+    }
   }
 
   /// Remove aluno da turma e (se tiver conta) retira o turmaId do seu doc.
@@ -143,14 +157,14 @@ class TurmasDb {
       _col.doc(turmaId).collection('formularios').get();
 
   static Future<void> atribuirFormulario(
-          String turmaId, String formularioId, String titulo) =>
+      String turmaId, String formularioId, String titulo) =>
       _col.doc(turmaId).collection('formularios').doc(formularioId).set({
         'titulo': titulo,
         'atribuido_em': FieldValue.serverTimestamp(),
       });
 
   static Future<void> removerFormulario(
-          String turmaId, String formularioId) =>
+      String turmaId, String formularioId) =>
       _col
           .doc(turmaId)
           .collection('formularios')

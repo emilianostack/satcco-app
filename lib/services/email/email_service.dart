@@ -26,7 +26,7 @@ class EmailService {
       ..recipients.add(destinatario)
       ..subject = 'Código de verificação — SATCCO App'
       ..html =
-          '''
+      '''
         <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto;">
           <h2 style="color: #1565C0;">SATCCO App</h2>
           <p>Use o código abaixo para confirmar o seu cadastro:</p>
@@ -90,7 +90,7 @@ class EmailService {
       ..recipients.add(destinatario)
       ..subject = 'Relatório de Notas — $tituloFormulario'
       ..html =
-          '''
+      '''
         <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto;">
           <h2 style="color: #2E7D32;">SATCCO App</h2>
           <p>Segue em anexo o relatório de notas do formulário
@@ -109,6 +109,47 @@ class EmailService {
           fileName: 'Relatorio_${tituloFormulario.replaceAll(' ', '_')}.pdf',
         ),
       ];
+
+    await send(message, _smtpServer);
+  }
+
+  /// Envia um e-mail de convite para o aluno informando que ele foi adicionado a uma turma.
+  static Future<void> enviarEmailConvite({
+    required String destinatario,
+    required String turmaNome,
+  }) async {
+    final message = Message()
+      ..from = Address(_smtpEmail, _nomeRemetente)
+      ..recipients.add(destinatario)
+      ..subject = 'Convite para Turma — SATCCO App'
+      ..html =
+      '''
+        <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto; padding: 20px; border: 1px solid #E0E0E0; border-radius: 12px; background-color: #FAFAFA;">
+          <h2 style="color: #1565C0; margin-top: 0;">SATCCO App</h2>
+          <p style="font-size: 15px; color: #333333; line-height: 1.5;">
+            Olá! Você foi convidado para participar da turma <strong>$turmaNome</strong> no sistema de avaliações do SATCCO.
+          </p>
+          <div style="margin: 24px 0; text-align: center;">
+            <div style="
+              display: inline-block;
+              font-size: 16px;
+              font-weight: bold;
+              color: #FFFFFF;
+              background-color: #1565C0;
+              padding: 12px 28px;
+              border-radius: 8px;
+              text-decoration: none;
+            ">Acesse o Aplicativo</div>
+          </div>
+          <p style="font-size: 14px; color: #666666; line-height: 1.5;">
+            Se você já possui uma conta cadastrada com este e-mail, a turma já estará vinculada ao seu perfil. Caso contrário, basta baixar o aplicativo e realizar o cadastro utilizando este mesmo e-mail para ter acesso automático às avaliações da turma.
+          </p>
+          <hr style="border: 0; border-top: 1px solid #E0E0E0; margin: 24px 0;" />
+          <p style="color: #999999; font-size: 11px; text-align: center; margin-bottom: 0;">
+            Este é um e-mail automático enviado pelo ecossistema acadêmico SATCCO.
+          </p>
+        </div>
+      ''';
 
     await send(message, _smtpServer);
   }
