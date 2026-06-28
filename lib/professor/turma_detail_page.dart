@@ -39,66 +39,17 @@ class _TurmaDetailPageState extends State<TurmaDetailPage>
     super.dispose();
   }
 
-  Future<void> _convidarAluno() async {
-    final controller = TextEditingController();
-
-    final email = await showModalBottomSheet<String>(
+  Future<void> _convidar() async {
+    await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => _ConvidarAlunoSheet(controller: controller),
-    );
-
-    if (email == null || email.isEmpty) return;
-
-    final existing = await TurmasDb.getAluno(widget.turmaId, email);
-    if (!mounted) return;
-
-    if (existing.exists) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Este aluno já foi convidado.'),
-            backgroundColor: Colors.orange),
-      );
-      return;
-    }
-
-    final usuariosSnap = await UsuariosDb.findByEmail(email);
-    if (!mounted) return;
-
-    String? alunoId;
-    String? alunoNome;
-
-    if (usuariosSnap.docs.isNotEmpty) {
-      final userDoc = usuariosSnap.docs.first;
-      final userData = userDoc.data() as Map<String, dynamic>;
-      if (userData['tipo'] == 'aluno') {
-        alunoId = userDoc.id;
-        alunoNome = userData['nome'] as String?;
-      }
-    }
-
-    await TurmasDb.convidarAluno(
-      turmaId: widget.turmaId,
-      email: email,
-      alunoId: alunoId,
-      alunoNome: alunoNome,
-    );
-
-    // Envia email de convite em background (falha silenciosa para não bloquear o fluxo)
-    EmailService.enviarConviteAluno(
-      destinatario: email,
-      turmaNome: widget.turmaNome,
-    ).catchError((_) {});
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(alunoId != null
-            ? 'Aluno adicionado com sucesso! Email de convite enviado.'
-            : 'Convite registado e email enviado. Ficará ativo quando o aluno criar a conta.'),
-        backgroundColor: Colors.green,
-        duration: const Duration(seconds: 3),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => _ConvidarSheet(
+        turmaId: widget.turmaId,
+        turmaNome: widget.turmaNome,
+        professorDonoId: _professorId,
       ),
     );
   }
@@ -211,23 +162,54 @@ class _TurmaDetailPageState extends State<TurmaDetailPage>
       body: TabBarView(
         controller: _tabController,
         children: [
-          _AlunosTab(turmaId: widget.turmaId, onConvidar: _convidarAluno),
+          _AlunosTab(turmaId: widget.turmaId, onConvidar: _convidar),
           _FormulariosTab(
-              turmaId: widget.turmaId,
-              turmaNome: widget.turmaNome,
-              onAtribuir: _atribuirFormulario),
-          _NotasTab(turmaId: widget.turmaId),
+            turmaId: widget.turmaId,
+            turmaNome: widget.turmaNome,
+            onAtribuir: _atribuirFormulario,
+          ),
+          _NotasTab(
+            turmaId: widget.turmaId,
+          ),
         ],
       ),
     );
   }
 }
 
-class _AlunosTab extends StatelessWidget {
+class _AlunosTab extends StatefulWidget {
   final String turmaId;
   final VoidCallback onConvidar;
 
   const _AlunosTab({required this.turmaId, required this.onConvidar});
+
+  @override
+  State<_AlunosTab> createState() => _AlunosTabState();
+}
+
+class _AlunosTabState extends State<_AlunosTab> {
+  late Future<List<_ProfConvItem>> _professoresFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _professoresFuture = _carregarProfessores();
+  }
+
+  Future<List<_ProfConvItem>> _carregarProfessores() async {
+    final uids = await TurmasDb.getProfessoresConvidados(widget.turmaId);
+    if (uids.isEmpty) return [];
+    final items = await Future.wait(uids.map((uid) async {
+      final doc = await UsuariosDb.getUsuario(uid);
+      final data = doc.data() as Map<String, dynamic>?;
+      return _ProfConvItem(
+        uid: uid,
+        nome: data?['nome'] as String? ?? '—',
+        email: data?['email'] as String? ?? '—',
+      );
+    }));
+    return items.toList();
+  }
 
   Color _statusColor(bool temConta, bool ativo) {
     if (!temConta) return Colors.orange;
@@ -243,27 +225,26 @@ class _AlunosTab extends StatelessWidget {
 
   Future<void> _toggleAtivo(
       BuildContext context, String docId, bool novoAtivo) async {
-    await TurmasDb.toggleAtivoAluno(turmaId, docId, novoAtivo);
+    await TurmasDb.toggleAtivoAluno(widget.turmaId, docId, novoAtivo);
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(novoAtivo
               ? 'Aluno reativado com sucesso.'
               : 'Aluno inativado com sucesso.'),
-          backgroundColor:
-              novoAtivo ? Colors.green : Colors.grey.shade700,
+          backgroundColor: novoAtivo ? Colors.green : Colors.grey.shade700,
         ),
       );
     }
   }
 
-  Future<void> _remover(
+  Future<void> _removerAluno(
       BuildContext context, String docId, String email, String? alunoId) async {
     if (alunoId != null) {
-      final formsSnap = await TurmasDb.getFormularios(turmaId);
+      final formsSnap = await TurmasDb.getFormularios(widget.turmaId);
       for (final formDoc in formsSnap.docs) {
-        final jaRespondeu = await RespostasDb.jaRespondeuPorId(
-            '${formDoc.id}_$alunoId');
+        final jaRespondeu =
+            await RespostasDb.jaRespondeuPorId('${formDoc.id}_$alunoId');
         if (jaRespondeu) {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -303,182 +284,301 @@ class _AlunosTab extends StatelessWidget {
 
     if (ok == true) {
       await TurmasDb.removerAluno(
-          turmaId: turmaId, docId: docId, alunoId: alunoId);
+          turmaId: widget.turmaId, docId: docId, alunoId: alunoId);
     }
+  }
+
+  Future<void> _removerProfessor(
+      BuildContext context, _ProfConvItem prof) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remover professor'),
+        content: Text('Remover "${prof.nome}" dos convidados desta turma?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancelar')),
+          TextButton(
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Remover'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await TurmasDb.removerConviteProfessor(widget.turmaId, prof.uid);
+      if (mounted) {
+        setState(() => _professoresFuture = _carregarProfessores());
+      }
+    }
+  }
+
+  Widget _buildProfessorCard(_ProfConvItem prof) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withValues(alpha: 0.05),
+              blurRadius: 8,
+              offset: const Offset(0, 3)),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 4, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                CircleAvatar(
+                  backgroundColor: Colors.teal.withValues(alpha: 0.1),
+                  child: const Icon(Icons.school, color: Colors.teal),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        prof.nome,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 15),
+                      ),
+                      Text(
+                        prof.email,
+                        style:
+                            const TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                ),
+                Builder(
+                  builder: (ctx) => PopupMenuButton<String>(
+                    icon: Icon(Icons.more_vert, color: Colors.grey.shade400),
+                    onSelected: (val) {
+                      if (val == 'remover') _removerProfessor(ctx, prof);
+                    },
+                    itemBuilder: (_) => [
+                      const PopupMenuItem(
+                        value: 'remover',
+                        child: Row(children: [
+                          Icon(Icons.delete_outline,
+                              color: Colors.red, size: 18),
+                          SizedBox(width: 10),
+                          Text('Remover',
+                              style: TextStyle(color: Colors.red)),
+                        ]),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.teal.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Text(
+                'Professor',
+                style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.teal,
+                    fontWeight: FontWeight.w500),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAlunoCard(
+      BuildContext context, DocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>;
+    final email = (data['email'] as String?) ?? doc.id;
+    final nome = data['nome'] as String?;
+    final alunoId = data['aluno_id'] as String?;
+    final temConta = alunoId != null;
+    final ativo = temConta ? ((data['ativo'] as bool?) ?? true) : false;
+    final statusColor = _statusColor(temConta, ativo);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withValues(alpha: 0.05),
+              blurRadius: 8,
+              offset: const Offset(0, 3)),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 4, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                CircleAvatar(
+                  backgroundColor: statusColor.withValues(alpha: 0.1),
+                  child: Icon(Icons.person, color: statusColor),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (nome != null)
+                        Text(
+                          nome,
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 15,
+                            color: (!temConta || ativo)
+                                ? Colors.black87
+                                : Colors.grey.shade500,
+                          ),
+                        ),
+                      Text(
+                        email,
+                        style: TextStyle(
+                          fontSize: nome != null ? 12 : 15,
+                          fontWeight: nome != null
+                              ? FontWeight.normal
+                              : FontWeight.w600,
+                          color: nome != null
+                              ? Colors.grey
+                              : ((!temConta || ativo)
+                                  ? Colors.black87
+                                  : Colors.grey.shade500),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                PopupMenuButton<String>(
+                  icon: Icon(Icons.more_vert, color: Colors.grey.shade400),
+                  onSelected: (val) {
+                    switch (val) {
+                      case 'inativar':
+                        _toggleAtivo(context, doc.id, false);
+                      case 'reativar':
+                        _toggleAtivo(context, doc.id, true);
+                      case 'remover':
+                        _removerAluno(context, doc.id, email, alunoId);
+                    }
+                  },
+                  itemBuilder: (_) => [
+                    if (temConta && ativo)
+                      const PopupMenuItem(
+                        value: 'inativar',
+                        child: Row(children: [
+                          Icon(Icons.block, color: Colors.orange, size: 18),
+                          SizedBox(width: 10),
+                          Text('Inativar'),
+                        ]),
+                      ),
+                    if (temConta && !ativo)
+                      const PopupMenuItem(
+                        value: 'reativar',
+                        child: Row(children: [
+                          Icon(Icons.check_circle_outline,
+                              color: Colors.green, size: 18),
+                          SizedBox(width: 10),
+                          Text('Reativar'),
+                        ]),
+                      ),
+                    const PopupMenuItem(
+                      value: 'remover',
+                      child: Row(children: [
+                        Icon(Icons.delete_outline, color: Colors.red, size: 18),
+                        SizedBox(width: 10),
+                        Text('Remover',
+                            style: TextStyle(color: Colors.red)),
+                      ]),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: statusColor.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                _statusLabel(temConta, ativo),
+                style: TextStyle(
+                  fontSize: 11,
+                  color: statusColor,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        StreamBuilder<QuerySnapshot>(
-          stream: TurmasDb.watchAlunos(turmaId),
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            final docs = [...(snapshot.data?.docs ?? [])]..sort((a, b) {
-                final aData = a.data() as Map<String, dynamic>;
-                final bData = b.data() as Map<String, dynamic>;
-                final aKey = ((aData['nome'] as String?) ??
-                        (aData['email'] as String?) ??
-                        '')
-                    .toLowerCase();
-                final bKey = ((bData['nome'] as String?) ??
-                        (bData['email'] as String?) ??
-                        '')
-                    .toLowerCase();
-                return aKey.compareTo(bKey);
-              });
+        FutureBuilder<List<_ProfConvItem>>(
+          future: _professoresFuture,
+          builder: (context, profSnap) {
+            final professores = profSnap.data ?? [];
+            return StreamBuilder<QuerySnapshot>(
+              stream: TurmasDb.watchAlunos(widget.turmaId),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting &&
+                    profSnap.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
 
-            if (docs.isEmpty) {
-              return const EmptyState(
-                icon: Icons.person_add_alt_1_outlined,
-                title: 'Nenhum aluno nesta turma.',
-                subtitle: 'Convide alunos pelo email.',
-              );
-            }
+                final docs = [...(snapshot.data?.docs ?? [])]..sort((a, b) {
+                    final aData = a.data() as Map<String, dynamic>;
+                    final bData = b.data() as Map<String, dynamic>;
+                    final aKey = ((aData['nome'] as String?) ??
+                            (aData['email'] as String?) ??
+                            '')
+                        .toLowerCase();
+                    final bKey = ((bData['nome'] as String?) ??
+                            (bData['email'] as String?) ??
+                            '')
+                        .toLowerCase();
+                    return aKey.compareTo(bKey);
+                  });
 
-            return ListView.builder(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
-              itemCount: docs.length,
-              itemBuilder: (context, index) {
-                final doc = docs[index];
-                final data = doc.data() as Map<String, dynamic>;
-                final email = (data['email'] as String?) ?? doc.id;
-                final nome = data['nome'] as String?;
-                final alunoId = data['aluno_id'] as String?;
-                final temConta = alunoId != null;
-                final ativo =
-                    temConta ? ((data['ativo'] as bool?) ?? true) : false;
-                final statusColor = _statusColor(temConta, ativo);
+                if (docs.isEmpty && professores.isEmpty) {
+                  return const EmptyState(
+                    icon: Icons.person_add_alt_1_outlined,
+                    title: 'Nenhum aluno nesta turma.',
+                    subtitle: 'Convide alunos pelo email.',
+                  );
+                }
 
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(14),
-                    boxShadow: [
-                      BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.05),
-                          blurRadius: 8,
-                          offset: const Offset(0, 3)),
-                    ],
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 4, 8),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            CircleAvatar(
-                              backgroundColor:
-                                  statusColor.withValues(alpha: 0.1),
-                              child: Icon(Icons.person, color: statusColor),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  if (nome != null)
-                                    Text(
-                                      nome,
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.w600,
-                                        fontSize: 15,
-                                        color: (!temConta || ativo)
-                                            ? Colors.black87
-                                            : Colors.grey.shade500,
-                                      ),
-                                    ),
-                                  Text(
-                                    email,
-                                    style: TextStyle(
-                                      fontSize: nome != null ? 12 : 15,
-                                      fontWeight: nome != null
-                                          ? FontWeight.normal
-                                          : FontWeight.w600,
-                                      color: nome != null
-                                          ? Colors.grey
-                                          : ((!temConta || ativo)
-                                              ? Colors.black87
-                                              : Colors.grey.shade500),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            PopupMenuButton<String>(
-                              icon: Icon(Icons.more_vert,
-                                  color: Colors.grey.shade400),
-                              onSelected: (val) {
-                                switch (val) {
-                                  case 'inativar':
-                                    _toggleAtivo(context, doc.id, false);
-                                  case 'reativar':
-                                    _toggleAtivo(context, doc.id, true);
-                                  case 'remover':
-                                    _remover(
-                                        context, doc.id, email, alunoId);
-                                }
-                              },
-                              itemBuilder: (_) => [
-                                if (temConta && ativo)
-                                  const PopupMenuItem(
-                                    value: 'inativar',
-                                    child: Row(children: [
-                                      Icon(Icons.block,
-                                          color: Colors.orange, size: 18),
-                                      SizedBox(width: 10),
-                                      Text('Inativar'),
-                                    ]),
-                                  ),
-                                if (temConta && !ativo)
-                                  const PopupMenuItem(
-                                    value: 'reativar',
-                                    child: Row(children: [
-                                      Icon(Icons.check_circle_outline,
-                                          color: Colors.green, size: 18),
-                                      SizedBox(width: 10),
-                                      Text('Reativar'),
-                                    ]),
-                                  ),
-                                const PopupMenuItem(
-                                  value: 'remover',
-                                  child: Row(children: [
-                                    Icon(Icons.delete_outline,
-                                        color: Colors.red, size: 18),
-                                    SizedBox(width: 10),
-                                    Text('Remover',
-                                        style: TextStyle(color: Colors.red)),
-                                  ]),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: statusColor.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Text(
-                            _statusLabel(temConta, ativo),
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: statusColor,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                return ListView(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
+                  children: [
+                    ...professores.map(_buildProfessorCard),
+                    ...docs.map((doc) => _buildAlunoCard(context, doc)),
+                  ],
                 );
               },
             );
@@ -488,11 +588,11 @@ class _AlunosTab extends StatelessWidget {
           bottom: 16,
           right: 16,
           child: FloatingActionButton.extended(
-            onPressed: onConvidar,
+            onPressed: widget.onConvidar,
             backgroundColor: Colors.green,
             foregroundColor: Colors.white,
             icon: const Icon(Icons.person_add),
-            label: const Text('Convidar Aluno'),
+            label: const Text('Convidar'),
           ),
         ),
       ],
@@ -688,7 +788,9 @@ class _FormulariosTab extends StatelessWidget {
 class _NotasTab extends StatefulWidget {
   final String turmaId;
 
-  const _NotasTab({required this.turmaId});
+  const _NotasTab({
+    required this.turmaId,
+  });
 
   @override
   State<_NotasTab> createState() => _NotasTabState();
@@ -705,11 +807,15 @@ class _NotasTabState extends State<_NotasTab> {
 
   Future<_NotasTabData> _carregarDados() async {
     final formulariosSnap = await TurmasDb.getFormularios(widget.turmaId);
-    final formularios = formulariosSnap.docs.map((d) {
+    final formularios = await Future.wait(formulariosSnap.docs.map((d) async {
       final data = d.data() as Map<String, dynamic>;
+      final respostasSnap = await RespostasDb.getByFormulario(d.id);
       return _FormularioInfo(
-          id: d.id, titulo: (data['titulo'] as String?) ?? 'Sem título');
-    }).toList();
+        id: d.id,
+        titulo: (data['titulo'] as String?) ?? 'Sem título',
+        totalRespostas: respostasSnap.docs.length,
+      );
+    }));
 
     final alunosSnap = await TurmasDb.watchAlunos(widget.turmaId).first;
     final alunos = alunosSnap.docs.map((d) {
@@ -775,7 +881,9 @@ class _NotasTabData {
 class _FormularioInfo {
   final String id;
   final String titulo;
-  _FormularioInfo({required this.id, required this.titulo});
+  final int totalRespostas;
+  _FormularioInfo(
+      {required this.id, required this.titulo, required this.totalRespostas});
 }
 
 class _AlunoInfo {
@@ -790,19 +898,24 @@ class _AlunoNota {
   final double? nota;
   final bool semConta;
   final bool respondeu;
-  _AlunoNota(
-      {required this.aluno,
-      this.nota,
-      required this.semConta,
-      required this.respondeu});
+  final bool isProfessor;
+  _AlunoNota({
+    required this.aluno,
+    this.nota,
+    required this.semConta,
+    required this.respondeu,
+    this.isProfessor = false,
+  });
 }
 
 class _FormularioNotasCard extends StatefulWidget {
   final _FormularioInfo formulario;
   final List<_AlunoInfo> alunos;
 
-  const _FormularioNotasCard(
-      {required this.formulario, required this.alunos});
+  const _FormularioNotasCard({
+    required this.formulario,
+    required this.alunos,
+  });
 
   @override
   State<_FormularioNotasCard> createState() => _FormularioNotasCardState();
@@ -887,6 +1000,63 @@ class _FormularioNotasCardState extends State<_FormularioNotasCard> {
             aluno: aluno, nota: media, semConta: false, respondeu: true));
       }
 
+      // Encontra respostas de professores convidados (is_professor == true, fora da lista de alunos)
+      final processedIds = widget.alunos
+          .where((a) => a.alunoId != null)
+          .map((a) => a.alunoId!)
+          .toSet();
+
+      for (final entry in respostasByAluno.entries) {
+        if (processedIds.contains(entry.key)) continue;
+        final profData = entry.value;
+        if ((profData['is_professor'] as bool?) != true) continue;
+
+        double pTotalPeso = 0;
+        double pTotalNota = 0;
+        final profRespostas =
+            List<Map<String, dynamic>>.from(profData['respostas'] ?? []);
+        for (final r in profRespostas) {
+          final pergId = r['pergunta_id'] as String?;
+          final tipo = (r['tipo'] as String?) ?? '';
+          final peso = (r['peso'] as num?)?.toDouble() ?? 1.0;
+          final valor = r['valor'];
+          final perg = pergId != null ? perguntas[pergId] : null;
+          switch (tipo) {
+            case 'escala':
+              pTotalPeso += peso;
+              pTotalNota += ((valor as num?)?.toDouble() ?? 0) * peso;
+            case 'sim_nao':
+            case 'verdadeiro_falso':
+              final correta = perg?['resposta_correta'] as String?;
+              if (correta == null) break;
+              pTotalPeso += peso;
+              pTotalNota += (valor == correta) ? peso * 10.0 : 0;
+            case 'multipla_escolha':
+              final correta = perg?['opcao_correta'];
+              if (correta == null) break;
+              pTotalPeso += peso;
+              pTotalNota += (valor == correta) ? peso * 10.0 : 0;
+            default:
+              break;
+          }
+        }
+        final profMedia = pTotalPeso > 0 ? pTotalNota / pTotalPeso : null;
+        notas.insert(
+          0,
+          _AlunoNota(
+            aluno: _AlunoInfo(
+              email: (profData['aluno_email'] as String?) ?? '',
+              nome: (profData['aluno_nome'] as String?) ?? 'Professor',
+              alunoId: entry.key,
+            ),
+            nota: profMedia,
+            semConta: false,
+            respondeu: true,
+            isProfessor: true,
+          ),
+        );
+      }
+
       if (mounted) {
         setState(() {
           _notas = notas;
@@ -923,7 +1093,7 @@ class _FormularioNotasCardState extends State<_FormularioNotasCard> {
           title: Text(widget.formulario.titulo,
               style: const TextStyle(fontWeight: FontWeight.w600)),
           subtitle: Text(
-            '${widget.alunos.length} aluno${widget.alunos.length == 1 ? '' : 's'}',
+            '${widget.formulario.totalRespostas} pessoa${widget.formulario.totalRespostas == 1 ? '' : 's'} respondeu',
             style: const TextStyle(fontSize: 12, color: Colors.grey),
           ),
           onExpansionChanged: (expanded) {
@@ -944,33 +1114,50 @@ class _FormularioNotasCardState extends State<_FormularioNotasCard> {
                   dense: true,
                   leading: CircleAvatar(
                     radius: 16,
-                    backgroundColor: n.respondeu
-                        ? Colors.blue.shade50
-                        : Colors.grey.shade100,
-                    child: Icon(Icons.person,
-                        size: 18,
-                        color: n.respondeu
-                            ? Colors.blueAccent
-                            : Colors.grey),
+                    backgroundColor: n.isProfessor
+                        ? Colors.teal.shade50
+                        : n.respondeu
+                            ? Colors.blue.shade50
+                            : Colors.grey.shade100,
+                    child: Icon(
+                      n.isProfessor ? Icons.school : Icons.person,
+                      size: 18,
+                      color: n.isProfessor
+                          ? Colors.teal
+                          : n.respondeu
+                              ? Colors.blueAccent
+                              : Colors.grey,
+                    ),
                   ),
                   title: Text(nome,
                       style: const TextStyle(
                           fontSize: 14, fontWeight: FontWeight.w500)),
-                  subtitle: n.aluno.nome != null
+                  subtitle: (n.aluno.nome != null && !n.isProfessor)
                       ? Text(email,
                           style: const TextStyle(
                               fontSize: 11, color: Colors.grey))
                       : null,
-                  trailing: n.semConta
-                      ? _InfoBadge(label: 'Sem conta', color: Colors.orange)
-                      : !n.respondeu
-                          ? _InfoBadge(
-                              label: 'Não respondeu', color: Colors.grey)
-                          : n.nota != null
-                              ? _NotaBadge(nota: n.nota!)
-                              : _InfoBadge(
-                                  label: 'S/ nota auto.',
-                                  color: Colors.blueGrey),
+                  trailing: n.isProfessor
+                      ? Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _InfoBadge(label: 'Professor', color: Colors.teal),
+                            if (n.nota != null) ...[
+                              const SizedBox(width: 6),
+                              _NotaBadge(nota: n.nota!),
+                            ],
+                          ],
+                        )
+                      : n.semConta
+                          ? _InfoBadge(label: 'Sem conta', color: Colors.orange)
+                          : !n.respondeu
+                              ? _InfoBadge(
+                                  label: 'Não respondeu', color: Colors.grey)
+                              : n.nota != null
+                                  ? _NotaBadge(nota: n.nota!)
+                                  : _InfoBadge(
+                                      label: 'S/ nota auto.',
+                                      color: Colors.blueGrey),
                 );
               }),
             const SizedBox(height: 8),
@@ -1026,7 +1213,7 @@ class _InfoBadge extends StatelessWidget {
 }
 
 /// Retorna dados do relatório incluindo respostas formatadas por aluno.
-/// Cada mapa tem: nome, email, nota, data, respostas (List ou null).
+/// Cada mapa tem: nome, email, nota, data, respostas (List ou null), is_professor (bool).
 Future<Map<String, dynamic>> _carregarNotasRelatorio({
   required String turmaId,
   required String formularioId,
@@ -1132,6 +1319,91 @@ Future<Map<String, dynamic>> _carregarNotasRelatorio({
       'nota': media,
       'data': respondidoEm,
       'respostas': respostasFormatadas,
+    });
+  }
+
+  // Respostas de professores convidados (is_professor == true, fora da lista de alunos)
+  final alunoIdSet = alunosSnap.docs
+      .map((d) => (d.data() as Map<String, dynamic>)['aluno_id'] as String?)
+      .whereType<String>()
+      .toSet();
+
+  for (final entry in respostasByAluno.entries) {
+    if (alunoIdSet.contains(entry.key)) continue;
+    final profRespData = entry.value;
+    if ((profRespData['is_professor'] as bool?) != true) continue;
+
+    final profNome = (profRespData['aluno_nome'] as String?) ?? 'Professor';
+    final profEmail = (profRespData['aluno_email'] as String?) ?? '';
+    final profRespostas =
+        List<Map<String, dynamic>>.from(profRespData['respostas'] ?? []);
+
+    double pTotalPeso = 0;
+    double pTotalNota = 0;
+    final profRespostasFormatadas = <Map<String, dynamic>>[];
+
+    for (final r in profRespostas) {
+      final pergId = r['pergunta_id'] as String?;
+      final tipo = (r['tipo'] as String?) ?? '';
+      final peso = (r['peso'] as num?)?.toDouble() ?? 1.0;
+      final valor = r['valor'];
+      final perg = pergId != null ? perguntas[pergId] : null;
+      final titulo =
+          (r['titulo'] as String?) ?? (perg?['titulo'] as String?) ?? '—';
+
+      String valorFmt;
+      switch (tipo) {
+        case 'escala':
+          pTotalPeso += peso;
+          pTotalNota += ((valor as num?)?.toDouble() ?? 0) * peso;
+          valorFmt = '${(valor as num).round()} / 10';
+        case 'sim_nao':
+          final correta = perg?['resposta_correta'] as String?;
+          if (correta != null) {
+            pTotalPeso += peso;
+            pTotalNota += (valor == correta) ? peso * 10.0 : 0;
+          }
+          valorFmt = valor?.toString() ?? '—';
+        case 'verdadeiro_falso':
+          final correta = perg?['resposta_correta'] as String?;
+          if (correta != null) {
+            pTotalPeso += peso;
+            pTotalNota += (valor == correta) ? peso * 10.0 : 0;
+          }
+          valorFmt = valor == 'verdadeiro'
+              ? 'Verdadeiro'
+              : valor == 'falso'
+                  ? 'Falso'
+                  : '—';
+        case 'multipla_escolha':
+          final correta = perg?['opcao_correta'];
+          if (correta != null) {
+            pTotalPeso += peso;
+            pTotalNota += (valor == correta) ? peso * 10.0 : 0;
+          }
+          final opcoes = List<String>.from(perg?['opcoes'] ?? []);
+          final idx =
+              valor is int ? valor : int.tryParse(valor?.toString() ?? '');
+          valorFmt = (idx != null && idx >= 0 && idx < opcoes.length)
+              ? opcoes[idx]
+              : '—';
+        default:
+          valorFmt = valor?.toString() ?? '—';
+      }
+      profRespostasFormatadas
+          .add({'titulo': titulo, 'tipo': tipo, 'valor_formatado': valorFmt});
+    }
+
+    final profMedia = pTotalPeso > 0 ? pTotalNota / pTotalPeso : null;
+    final profRespondidoEm =
+        (profRespData['respondido_em'] as Timestamp?)?.toDate();
+    alunos.insert(0, {
+      'nome': profNome,
+      'email': profEmail,
+      'nota': profMedia,
+      'data': profRespondidoEm,
+      'respostas': profRespostasFormatadas,
+      'is_professor': true,
     });
   }
 
@@ -1307,67 +1579,196 @@ class _RelatorioSheetState extends State<_RelatorioSheet> {
   }
 }
 
-class _ConvidarAlunoSheet extends StatefulWidget {
-  final TextEditingController controller;
+class _ConvidarSheet extends StatelessWidget {
+  final String turmaId;
+  final String turmaNome;
+  final String professorDonoId;
 
-  const _ConvidarAlunoSheet({required this.controller});
-
-  @override
-  State<_ConvidarAlunoSheet> createState() => _ConvidarAlunoSheetState();
-}
-
-class _ConvidarAlunoSheetState extends State<_ConvidarAlunoSheet> {
-  String? _erro;
-
-  void _submit() {
-    final email = widget.controller.text.trim().toLowerCase();
-    if (!email.contains('@')) {
-      setState(() => _erro = 'Informe um e-mail válido');
-      return;
-    }
-    Navigator.pop(context, email);
-  }
+  const _ConvidarSheet({
+    required this.turmaId,
+    required this.turmaNome,
+    required this.professorDonoId,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final bottom = MediaQuery.of(context).viewInsets.bottom;
-    return Container(
-      padding: EdgeInsets.fromLTRB(24, 24, 24, 24 + bottom),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
+    return Padding(
+      padding:
+          EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
       child: Column(
         mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          const SizedBox(height: 12),
           Center(
             child: Container(
               width: 40,
               height: 4,
-              margin: const EdgeInsets.only(bottom: 20),
               decoration: BoxDecoration(
                 color: Colors.grey.shade300,
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
           ),
-          const Text(
-            'Convidar Aluno',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.75,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+                    child: Row(
+                      children: const [
+                        Icon(Icons.person, color: Colors.green, size: 18),
+                        SizedBox(width: 8),
+                        Text(
+                          'Convidar Aluno',
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                              color: Colors.green),
+                        ),
+                      ],
+                    ),
+                  ),
+                  _AlunoTabContent(turmaId: turmaId, turmaNome: turmaNome),
+                  const Divider(height: 1, indent: 20, endIndent: 20),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+                    child: Row(
+                      children: const [
+                        Icon(Icons.school, color: Colors.teal, size: 18),
+                        SizedBox(width: 8),
+                        Text(
+                          'Professores Convidados',
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                              color: Colors.teal),
+                        ),
+                      ],
+                    ),
+                  ),
+                  _ProfessorTabContent(
+                    turmaId: turmaId,
+                    turmaNome: turmaNome,
+                    professorDonoId: professorDonoId,
+                  ),
+                ],
+              ),
+            ),
           ),
-          const SizedBox(height: 4),
-          const Text(
-            'O aluno receberá acesso às avaliações da turma.',
-            style: TextStyle(fontSize: 13, color: Colors.grey),
+        ],
+      ),
+    );
+  }
+}
+
+class _AlunoTabContent extends StatefulWidget {
+  final String turmaId;
+  final String turmaNome;
+
+  const _AlunoTabContent({required this.turmaId, required this.turmaNome});
+
+  @override
+  State<_AlunoTabContent> createState() => _AlunoTabContentState();
+}
+
+class _AlunoTabContentState extends State<_AlunoTabContent> {
+  final _emailCtrl = TextEditingController();
+  bool _carregando = false;
+  String? _erro;
+
+  @override
+  void dispose() {
+    _emailCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _convidar() async {
+    final email = _emailCtrl.text.trim().toLowerCase();
+    if (!email.contains('@')) {
+      setState(() => _erro = 'Informe um e-mail válido.');
+      return;
+    }
+    setState(() {
+      _carregando = true;
+      _erro = null;
+    });
+    try {
+      final existing = await TurmasDb.getAluno(widget.turmaId, email);
+      if (existing.exists) {
+        setState(() {
+          _erro = 'Este aluno já foi convidado.';
+          _carregando = false;
+        });
+        return;
+      }
+
+      final usuariosSnap = await UsuariosDb.findByEmail(email);
+      String? alunoId;
+      String? alunoNome;
+      if (usuariosSnap.docs.isNotEmpty) {
+        final userDoc = usuariosSnap.docs.first;
+        final userData = userDoc.data() as Map<String, dynamic>;
+        if (userData['tipo'] == 'aluno') {
+          alunoId = userDoc.id;
+          alunoNome = userData['nome'] as String?;
+        }
+      }
+
+      await TurmasDb.convidarAluno(
+        turmaId: widget.turmaId,
+        email: email,
+        alunoId: alunoId,
+        alunoNome: alunoNome,
+      );
+
+      EmailService.enviarConviteAluno(
+        destinatario: email,
+        turmaNome: widget.turmaNome,
+      ).catchError((_) {});
+
+      if (mounted) {
+        _emailCtrl.clear();
+        setState(() => _carregando = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(alunoId != null
+                ? 'Aluno adicionado! Email de convite enviado.'
+                : 'Convite registado. Email enviado ao aluno.'),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 3),
           ),
-          const SizedBox(height: 16),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _erro = e.toString();
+          _carregando = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 8),
           TextField(
-            controller: widget.controller,
+            controller: _emailCtrl,
             autofocus: true,
             keyboardType: TextInputType.emailAddress,
             textInputAction: TextInputAction.done,
-            onSubmitted: (_) => _submit(),
+            onSubmitted: (_) => _convidar(),
             onChanged: (_) {
               if (_erro != null) setState(() => _erro = null);
             },
@@ -1376,13 +1777,13 @@ class _ConvidarAlunoSheetState extends State<_ConvidarAlunoSheet> {
               prefixIcon:
                   const Icon(Icons.email_outlined, color: Colors.green),
               errorText: _erro,
-              border:
-                  OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12)),
               filled: true,
               fillColor: Colors.grey.shade50,
             ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
           SizedBox(
             width: double.infinity,
             height: 48,
@@ -1393,13 +1794,256 @@ class _ConvidarAlunoSheetState extends State<_ConvidarAlunoSheet> {
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12)),
               ),
-              onPressed: _submit,
-              child: const Text('Convidar',
-                  style: TextStyle(fontWeight: FontWeight.bold)),
+              onPressed: _carregando ? null : _convidar,
+              child: _carregando
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Text('Convidar',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
             ),
           ),
         ],
       ),
     );
   }
+}
+
+class _ProfessorTabContent extends StatefulWidget {
+  final String turmaId;
+  final String turmaNome;
+  final String professorDonoId;
+
+  const _ProfessorTabContent({
+    required this.turmaId,
+    required this.turmaNome,
+    required this.professorDonoId,
+  });
+
+  @override
+  State<_ProfessorTabContent> createState() => _ProfessorTabContentState();
+}
+
+class _ProfessorTabContentState extends State<_ProfessorTabContent> {
+  final _emailCtrl = TextEditingController();
+  bool _carregando = true;
+  bool _adicionando = false;
+  List<_ProfConvItem> _convidados = [];
+  String? _erro;
+
+  @override
+  void initState() {
+    super.initState();
+    _carregar();
+  }
+
+  @override
+  void dispose() {
+    _emailCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _carregar() async {
+    setState(() {
+      _carregando = true;
+      _erro = null;
+    });
+    try {
+      final uids = await TurmasDb.getProfessoresConvidados(widget.turmaId);
+      final items = await Future.wait(uids.map((uid) async {
+        final doc = await UsuariosDb.getUsuario(uid);
+        final data = doc.data() as Map<String, dynamic>?;
+        return _ProfConvItem(
+          uid: uid,
+          nome: data?['nome'] as String? ?? '—',
+          email: data?['email'] as String? ?? '—',
+        );
+      }));
+      if (mounted) {
+        setState(() {
+          _convidados = items.toList();
+          _carregando = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _erro = e.toString();
+          _carregando = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _adicionar() async {
+    final email = _emailCtrl.text.trim().toLowerCase();
+    if (email.isEmpty || !email.contains('@')) {
+      setState(() => _erro = 'Informe um email válido.');
+      return;
+    }
+
+    final currentEmail = AuthService.currentUser?.email?.toLowerCase() ?? '';
+    if (email == currentEmail) {
+      setState(() => _erro = 'Você não pode se convidar para sua própria turma.');
+      return;
+    }
+
+    setState(() {
+      _adicionando = true;
+      _erro = null;
+    });
+    try {
+      final snap = await UsuariosDb.findByEmail(email);
+      if (snap.docs.isEmpty) {
+        setState(() {
+          _erro = 'Nenhum usuário encontrado com este email.';
+          _adicionando = false;
+        });
+        return;
+      }
+      final userDoc = snap.docs.first;
+      if (userDoc.id == widget.professorDonoId) {
+        setState(() {
+          _erro = 'Você não pode se convidar para sua própria turma.';
+          _adicionando = false;
+        });
+        return;
+      }
+      final tipo = (userDoc.data() as Map<String, dynamic>)['tipo'] as String? ?? '';
+      if (tipo != 'professor') {
+        setState(() {
+          _erro = 'Este usuário não é um professor.';
+          _adicionando = false;
+        });
+        return;
+      }
+      if (_convidados.any((c) => c.uid == userDoc.id)) {
+        setState(() {
+          _erro = 'Este professor já foi convidado.';
+          _adicionando = false;
+        });
+        return;
+      }
+      await TurmasDb.convidarProfessor(widget.turmaId, userDoc.id);
+      EmailService.enviarConviteProfessor(
+        destinatario: email,
+        turmaNome: widget.turmaNome,
+      ).catchError((_) {});
+      _emailCtrl.clear();
+      await _carregar();
+      if (mounted) setState(() => _adicionando = false);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _erro = e.toString();
+          _adicionando = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _remover(String uid) async {
+    await TurmasDb.removerConviteProfessor(widget.turmaId, uid);
+    await _carregar();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (_carregando)
+            const Center(child: CircularProgressIndicator())
+          else if (_convidados.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                'Nenhum professor convidado ainda.',
+                style: TextStyle(color: Colors.grey.shade500, fontSize: 13),
+              ),
+            )
+          else
+            ..._convidados.map(
+              (p) => ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const CircleAvatar(
+                  backgroundColor: Color(0xFFE0F2F1),
+                  child: Icon(Icons.school, color: Colors.teal),
+                ),
+                title: Text(p.nome,
+                    style: const TextStyle(fontWeight: FontWeight.w500)),
+                subtitle: Text(p.email,
+                    style: const TextStyle(fontSize: 12)),
+                trailing: IconButton(
+                  icon: const Icon(Icons.remove_circle_outline,
+                      color: Colors.redAccent),
+                  tooltip: 'Remover convite',
+                  onPressed: () => _remover(p.uid),
+                ),
+              ),
+            ),
+          const Divider(height: 20),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _emailCtrl,
+                  keyboardType: TextInputType.emailAddress,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => _adicionar(),
+                  decoration: InputDecoration(
+                    hintText: 'Email do professor',
+                    isDense: true,
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                    prefixIcon: const Icon(Icons.email_outlined,
+                        color: Colors.teal, size: 20),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              _adicionando
+                  ? const SizedBox(
+                      width: 44,
+                      height: 44,
+                      child: Center(
+                          child: CircularProgressIndicator(strokeWidth: 2)),
+                    )
+                  : ElevatedButton(
+                      onPressed: _adicionar,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.teal,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 14),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10)),
+                      ),
+                      child: const Text('Convidar'),
+                    ),
+            ],
+          ),
+          if (_erro != null) ...[
+            const SizedBox(height: 8),
+            Text(_erro!,
+                style: const TextStyle(color: Colors.red, fontSize: 12)),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ProfConvItem {
+  final String uid;
+  final String nome;
+  final String email;
+  const _ProfConvItem(
+      {required this.uid, required this.nome, required this.email});
 }

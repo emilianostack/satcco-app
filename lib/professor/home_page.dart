@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'formularios_page.dart';
 import 'historico_page.dart';
+import 'minhas_avaliacoes_page.dart';
 import 'perguntas_page.dart';
 import 'turmas_page.dart';
 import '../services/auth_service.dart';
@@ -89,53 +90,76 @@ class _HomePageState extends State<HomePage> {
           Expanded(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: GridView.count(
-                crossAxisCount: 2,
-                crossAxisSpacing: 15,
-                mainAxisSpacing: 15,
+              child: Column(
                 children: [
-                  _buildMenuTile(
+                  Expanded(
+                    child: GridView.count(
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 15,
+                      mainAxisSpacing: 15,
+                      children: [
+                        _buildMenuTile(
+                          context,
+                          title: 'Formulários',
+                          icon: Icons.add_task_rounded,
+                          color: Colors.blue,
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const FormulariosPage(),
+                            ),
+                          ),
+                        ),
+                        _buildMenuTile(
+                          context,
+                          title: 'Histórico',
+                          icon: Icons.assignment_turned_in_outlined,
+                          color: Colors.orange,
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const HistoricoPage()),
+                          ),
+                        ),
+                        _buildMenuTile(
+                          context,
+                          title: 'Alunos',
+                          icon: Icons.people_alt_outlined,
+                          color: Colors.green,
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const TurmasPage()),
+                          ),
+                        ),
+                        _buildMenuTile(
+                          context,
+                          title: 'Banco de Questões',
+                          icon: Icons.quiz_outlined,
+                          color: Colors.purple,
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const PergunatasPage()),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 15),
+                  _buildMenuTileWide(
                     context,
-                    title: 'Formulários',
-                    icon: Icons.add_task_rounded,
-                    color: Colors.blue,
+                    title: 'Minhas Avaliações',
+                    subtitle: 'Responda os formulários.',
+                    icon: Icons.rate_review_outlined,
+                    color: Colors.teal,
                     onTap: () => Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => const FormulariosPage(),
-                      ),
+                          builder: (_) => const MinhasAvaliacoesPage()),
                     ),
                   ),
-                  _buildMenuTile(
-                    context,
-                    title: 'Histórico',
-                    icon: Icons.assignment_turned_in_outlined,
-                    color: Colors.orange,
-                    onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => const HistoricoPage()),
-                    ),
-                  ),
-                  _buildMenuTile(
-                    context,
-                    title: 'Alunos',
-                    icon: Icons.people_alt_outlined,
-                    color: Colors.green,
-                    onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => const TurmasPage()),
-                    ),
-                  ),
-                  _buildMenuTile(
-                    context,
-                    title: 'Banco de Questões',
-                    icon: Icons.quiz_outlined,
-                    color: Colors.purple,
-                    onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => const PergunatasPage()),
-                    ),
-                  ),
+                  const SizedBox(height: 20),
                 ],
               ),
             ),
@@ -182,6 +206,71 @@ class _HomePageState extends State<HomePage> {
                 color: Colors.black87,
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMenuTileWide(
+    BuildContext context, {
+    required String title,
+    required String subtitle,
+    required IconData icon,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(20),
+      child: Container(
+        height: 72,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.05),
+              blurRadius: 10,
+              offset: const Offset(0, 5),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            const SizedBox(width: 20),
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Icon(icon, size: 26, color: color),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                      color: Colors.black87,
+                    ),
+                  ),
+                  Text(
+                    subtitle,
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right, color: Colors.grey.shade300),
+            const SizedBox(width: 12),
           ],
         ),
       ),

@@ -7,14 +7,12 @@ class PerguntasDb {
   static Stream<QuerySnapshot> watchByProfessor(String professorId) =>
       _col
           .where('professor_id', isEqualTo: professorId)
-          .orderBy('criado_em', descending: true) // Ordenação adicionada aqui
           .snapshots();
 
   static Future<List<DocumentSnapshot>> getByProfessor(
       String professorId) async {
     final snap = await _col
         .where('professor_id', isEqualTo: professorId)
-        .orderBy('criado_em', descending: true) // Ordenação adicionada aqui
         .get();
     return snap.docs;
   }

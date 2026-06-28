@@ -59,7 +59,8 @@ class RespostasDb {
   static Future<DocumentSnapshot> getRespostaById(String docId) =>
       _col.doc(docId).get();
 
-  /// Salva a resposta do aluno com ID determinístico para evitar duplicatas.
+  /// Salva a resposta com ID determinístico para evitar duplicatas.
+  /// [isProfessor] marca respostas enviadas pelo próprio professor do formulário.
   static Future<void> submit({
     required String docId,
     String? sessaoId,
@@ -69,6 +70,7 @@ class RespostasDb {
     required String? alunoEmail,
     required List<Map<String, dynamic>> respostas,
     double? nota,
+    bool isProfessor = false,
   }) => _col.doc(docId).set({
     'sessao_id': ?sessaoId,
     'formulario_id': formularioId,
@@ -78,5 +80,6 @@ class RespostasDb {
     'respostas': respostas,
     'nota': ?nota,
     'respondido_em': FieldValue.serverTimestamp(),
+    if (isProfessor) 'is_professor': true,
   });
 }

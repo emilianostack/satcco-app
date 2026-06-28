@@ -113,6 +113,36 @@ class EmailService {
     await send(message, _smtpServer);
   }
 
+  /// Envia e-mail de convite ao professor informando que foi convidado para avaliar em uma turma.
+  static Future<void> enviarConviteProfessor({
+    required String destinatario,
+    required String turmaNome,
+  }) async {
+    final message = Message()
+      ..from = Address(_smtpEmail, _nomeRemetente)
+      ..recipients.add(destinatario)
+      ..subject = 'Convite para avaliar na turma "$turmaNome" — SATCCO App'
+      ..html = '''
+        <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto; padding: 20px; border: 1px solid #E0E0E0; border-radius: 12px; background-color: #FAFAFA;">
+          <h2 style="color: #00796B; margin-top: 0;">SATCCO App</h2>
+          <p style="font-size: 15px; color: #333333; line-height: 1.5;">
+            Você foi convidado(a) para responder as avaliações da turma
+            <strong>$turmaNome</strong>.
+          </p>
+          <p style="font-size: 14px; color: #666666; line-height: 1.5;">
+            Acesse o aplicativo e abra a seção <strong>Minhas Avaliações</strong>
+            para visualizar os formulários disponíveis.
+          </p>
+          <hr style="border: 0; border-top: 1px solid #E0E0E0; margin: 24px 0;" />
+          <p style="color: #999999; font-size: 11px; text-align: center; margin-bottom: 0;">
+            Este é um e-mail automático enviado pelo ecossistema acadêmico SATCCO.
+          </p>
+        </div>
+      ''';
+
+    await send(message, _smtpServer);
+  }
+
   /// Envia um e-mail de convite para o aluno informando que ele foi adicionado a uma turma.
   static Future<void> enviarEmailConvite({
     required String destinatario,

@@ -9,14 +9,18 @@ class ResponderFormularioPage extends StatefulWidget {
   final String? sessaoId;
   final String formularioId;
 
-  /// Quando true, as respostas não são gravadas (modo de pré-visualização do professor).
+  /// Quando true, as respostas não são gravadas (modo de pré-visualização).
   final bool modoTeste;
+
+  /// Quando true, o professor está respondendo como participante (respostas são gravadas).
+  final bool isProfessor;
 
   const ResponderFormularioPage({
     super.key,
     this.sessaoId,
     required this.formularioId,
     this.modoTeste = false,
+    this.isProfessor = false,
   });
 
   @override
@@ -190,6 +194,7 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
         alunoEmail: user.email,
         respostas: listaRespostas,
         nota: nota,
+        isProfessor: widget.isProfessor,
       );
 
       if (mounted) {
@@ -218,7 +223,11 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
 
     if (_jaRespondeu) return _buildSucesso();
 
-    final corAppBar = widget.modoTeste ? Colors.orange : Colors.green;
+    final corAppBar = widget.modoTeste
+        ? Colors.orange
+        : widget.isProfessor
+            ? Colors.teal
+            : Colors.green;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF0F2F5),
@@ -228,7 +237,7 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
         backgroundColor: corAppBar,
         foregroundColor: Colors.white,
         elevation: 0,
-        automaticallyImplyLeading: widget.modoTeste,
+        automaticallyImplyLeading: widget.modoTeste || widget.isProfessor,
       ),
       body: GestureDetector(
         behavior: HitTestBehavior.opaque,
@@ -491,6 +500,16 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
   }
 
   Widget _buildBotaoEnviar() {
+    final Color cor = widget.modoTeste
+        ? Colors.orange
+        : widget.isProfessor
+            ? Colors.teal
+            : Colors.green;
+    final String labelEnviando = widget.modoTeste ? 'A calcular...' : 'A enviar...';
+    final String label = widget.modoTeste ? 'Ver Resultado' : 'Enviar';
+    final IconData icone =
+        widget.modoTeste ? Icons.science_outlined : Icons.send_rounded;
+
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       color: Colors.white,
@@ -499,7 +518,7 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
         height: 52,
         child: ElevatedButton.icon(
           style: ElevatedButton.styleFrom(
-            backgroundColor: widget.modoTeste ? Colors.orange : Colors.green,
+            backgroundColor: cor,
             foregroundColor: Colors.white,
             shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(14)),
@@ -511,13 +530,10 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
                   height: 20,
                   child: CircularProgressIndicator(
                       color: Colors.white, strokeWidth: 2))
-              : Icon(widget.modoTeste ? Icons.science_outlined : Icons.send_rounded),
+              : Icon(icone),
           label: Text(
-            _enviando
-                ? (widget.modoTeste ? 'A calcular...' : 'A enviar...')
-                : (widget.modoTeste ? 'Ver Resultado' : 'Enviar Respostas'),
-            style:
-                const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            _enviando ? labelEnviando : label,
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
           ),
         ),
       ),
@@ -525,6 +541,22 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
   }
 
   Widget _buildSucesso() {
+    final Color cor = widget.modoTeste
+        ? Colors.orange
+        : widget.isProfessor
+            ? Colors.teal
+            : Colors.green;
+    final IconData icone = widget.modoTeste
+        ? Icons.science_outlined
+        : widget.isProfessor
+            ? Icons.school_outlined
+            : Icons.check_circle_rounded;
+    final String titulo = widget.modoTeste
+        ? 'Resultado do Teste'
+        : widget.isProfessor
+            ? 'Resposta enviada!'
+            : 'Avaliação enviada!';
+
     return Scaffold(
       backgroundColor: const Color(0xFFF0F2F5),
       body: Center(
@@ -535,19 +567,15 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
             children: [
               Container(
                 padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
+                decoration: const BoxDecoration(
                   color: Colors.white,
                   shape: BoxShape.circle,
                 ),
-                child: Icon(
-                  widget.modoTeste ? Icons.science_outlined : Icons.check_circle_rounded,
-                  color: widget.modoTeste ? Colors.orange : Colors.green,
-                  size: 80,
-                ),
+                child: Icon(icone, color: cor, size: 80),
               ),
               const SizedBox(height: 28),
               Text(
-                widget.modoTeste ? 'Resultado do Teste' : 'Avaliação enviada!',
+                titulo,
                 style: const TextStyle(
                   fontSize: 24,
                   fontWeight: FontWeight.bold,
@@ -622,18 +650,22 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
                 height: 52,
                 child: ElevatedButton(
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
+                    backgroundColor: cor,
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(14)),
                   ),
-                  onPressed: () => widget.modoTeste
+                  onPressed: () => (widget.modoTeste || widget.isProfessor)
                       ? Navigator.of(context).pop()
                       : Navigator.of(context).popUntil((route) => route.isFirst),
                   child: Text(
-                      widget.modoTeste ? 'Fechar Teste' : 'Voltar ao início',
-                      style: const TextStyle(
-                          fontWeight: FontWeight.bold, fontSize: 16)),
+                    widget.modoTeste
+                        ? 'Fechar Teste'
+                        : widget.isProfessor
+                            ? 'Voltar'
+                            : 'Voltar ao início',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
                 ),
               ),
             ],

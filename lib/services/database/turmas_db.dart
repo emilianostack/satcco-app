@@ -171,6 +171,56 @@ class TurmasDb {
           .doc(formularioId)
           .delete();
 
+  /// Retorna a lista de UIDs dos professores convidados para esta turma.
+  static Future<List<String>> getProfessoresConvidados(String turmaId) async {
+    final doc = await _col.doc(turmaId).get();
+    if (!doc.exists) return [];
+    final data = doc.data() as Map<String, dynamic>;
+    return List<String>.from(data['professores_convidados'] as List? ?? []);
+  }
+
+  /// Adiciona um professor à lista de convidados da turma e grava o turmaId
+  /// no documento do professor (espelho do padrão de convite de aluno).
+  static Future<void> convidarProfessor(
+      String turmaId, String professorId) async {
+    final batch = _db.batch();
+    batch.update(_col.doc(turmaId), {
+      'professores_convidados': FieldValue.arrayUnion([professorId]),
+    });
+    batch.update(_db.collection('usuarios').doc(professorId), {
+      'turmas_convidado': FieldValue.arrayUnion([turmaId]),
+    });
+    await batch.commit();
+  }
+
+  /// Remove um professor da lista de convidados da turma.
+  static Future<void> removerConviteProfessor(
+      String turmaId, String professorId) async {
+    final batch = _db.batch();
+    batch.update(_col.doc(turmaId), {
+      'professores_convidados': FieldValue.arrayRemove([professorId]),
+    });
+    batch.update(_db.collection('usuarios').doc(professorId), {
+      'turmas_convidado': FieldValue.arrayRemove([turmaId]),
+    });
+    await batch.commit();
+  }
+
+  /// Retorna as turmas onde este professor foi convidado a avaliar,
+  /// lendo a lista do próprio documento do professor (sem query cross-collection).
+  static Future<List<DocumentSnapshot>> getTurmasConvidado(
+      String professorId) async {
+    final userDoc =
+        await _db.collection('usuarios').doc(professorId).get();
+    final data = userDoc.data();
+    final turmaIds =
+        List<String>.from(data?['turmas_convidado'] as List? ?? []);
+    if (turmaIds.isEmpty) return [];
+    final docs =
+        await Future.wait(turmaIds.map((id) => _col.doc(id).get()));
+    return docs.where((d) => d.exists).toList();
+  }
+
   /// Atualiza o título do formulário em todas as turmas do professor que o têm atribuído.
   static Future<void> atualizarTituloFormulario({
     required String formularioId,

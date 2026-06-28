@@ -7,14 +7,12 @@ class FormulariosDb {
   static Stream<QuerySnapshot> watchByProfessor(String professorId) =>
       _col
           .where('professor_id', isEqualTo: professorId)
-          .orderBy('criado_em', descending: true) // Ordenação por data
           .snapshots();
 
   static Future<List<DocumentSnapshot>> getByProfessor(
       String professorId) async {
     final snap = await _col
         .where('professor_id', isEqualTo: professorId)
-        .orderBy('criado_em', descending: true) // Ordenação por data
         .get();
     return snap.docs;
   }
@@ -152,4 +150,5 @@ class FormulariosDb {
     }
     return null;
   }
+
 }
