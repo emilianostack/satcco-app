@@ -2,7 +2,7 @@
 
 Aplicativo Flutter para gestão de avaliações. Professores criam formulários, atribuem-nos a turmas e geram QR Codes para que alunos respondam. O sistema calcula notas automaticamente.
 
-O app consome a API própria [`sattco_api`](https://github.com/emilianostack/satcco_api/) (Node.js + Express + PostgreSQL, autenticação JWT) — não usa mais Firebase.
+O app consome a API própria [`sattco_api`](https://github.com/emilianostack/sattco_api) (Node.js + Express + PostgreSQL, autenticação JWT) — não usa mais Firebase.
 
 ---
 
@@ -20,7 +20,7 @@ O app consome a API própria [`sattco_api`](https://github.com/emilianostack/sat
 ## Pré-requisitos
 
 - Flutter SDK `^3.11.4`
-- A API [`sattco_api`](https://github.com/emilianostack/satcco_api/)  rodando (local via Docker ou publicada) — veja o README dela para subir o backend e o Postgres.
+- A API [`sattco_api`](https://github.com/emilianostack/sattco_api)  rodando (local via Docker ou publicada) — veja o README dela para subir o backend e o Postgres.
 
 ---
 
