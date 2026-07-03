@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import '../widgets/question_type_icon.dart';
 import '../widgets/empty_state.dart';
-import '../services/auth_service.dart';
-import '../services/database/perguntas_db.dart';
-import '../services/database/formularios_db.dart';
+import '../services/api_client.dart';
+import '../services/api/perguntas_api.dart';
+import '../services/route_observer.dart';
 
 class PergunatasPage extends StatefulWidget {
   const PergunatasPage({super.key});
@@ -13,7 +12,7 @@ class PergunatasPage extends StatefulWidget {
   State<PergunatasPage> createState() => _PergunatasPageState();
 }
 
-class _PergunatasPageState extends State<PergunatasPage> {
+class _PergunatasPageState extends State<PergunatasPage> with RouteAware {
   final _tituloController = TextEditingController();
   String _tipoSelecionado = 'escala';
 
@@ -25,6 +24,13 @@ class _PergunatasPageState extends State<PergunatasPage> {
 
   String? _respostaCorretaSN;
 
+  late Future<List<Map<String, dynamic>>> _future;
+
+  /// Incrementado a cada ação que deveria atualizar `_future` — evita que um
+  /// GET mais antigo, ainda em voo, sobrescreva com dados desatualizados o
+  /// resultado de uma ação mais recente (ex.: criar/remover).
+  int _reqGen = 0;
+
   final Map<String, String> _tiposLabel = {
     'escala': 'Escala (0 a 10)',
     'sim_nao': 'Sim / Não',
@@ -34,15 +40,57 @@ class _PergunatasPageState extends State<PergunatasPage> {
   };
 
   @override
+  void initState() {
+    super.initState();
+    _future = _carregar();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    appRouteObserver.subscribe(this, ModalRoute.of(context) as PageRoute);
+  }
+
+  /// Chamado sempre que a rota empilhada por cima desta é fechada (ex.: o
+  /// bottom sheet de nova/editar pergunta) — reforça o recarregamento mesmo
+  /// que o fluxo de salvar não dispare corretamente.
+  @override
+  void didPopNext() => _recarregar();
+
+  Future<List<Map<String, dynamic>>> _carregar() async {
+    final perguntas = await PerguntasApi.listar();
+    perguntas.sort((a, b) =>
+        (a['criado_em'] as String).compareTo(b['criado_em'] as String));
+    return perguntas;
+  }
+
+  /// Busca a lista nova ANTES de trocar `_future` — assim, se o reload falhar
+  /// (rede instável), a lista antiga continua na tela em vez de sumir atrás
+  /// de um erro. A ação que disparou o reload (criar/editar/remover) já
+  /// terá sido concluída com sucesso nesse ponto.
+  Future<void> _recarregar() async {
+    final gen = ++_reqGen;
+    try {
+      final dados = await _carregar();
+      if (mounted && gen == _reqGen) {
+        setState(() {
+          _future = Future.value(dados);
+        });
+      }
+    } catch (_) {
+      // mantém a lista atual; o usuário pode puxar para atualizar depois.
+    }
+  }
+
+  @override
   void dispose() {
+    appRouteObserver.unsubscribe(this);
     _tituloController.dispose();
     for (final c in _opcoesControllers) {
       c.dispose();
     }
     super.dispose();
   }
-
-  String get _professorId => AuthService.currentUser!.uid;
 
   void _inicializarOpcoes({List<String>? existentes, int? opcaoCorreta}) {
     for (final c in _opcoesControllers) {
@@ -54,16 +102,14 @@ class _PergunatasPageState extends State<PergunatasPage> {
     _opcaoCorretaIndex = opcaoCorreta;
   }
 
-  Future<void> _salvarPergunta({String? docId}) async {
+  Future<void> _salvarPergunta({String? id}) async {
     final titulo = _tituloController.text.trim();
     if (titulo.isEmpty) return;
 
-    final Map<String, dynamic> dadosValidos = {
+    final Map<String, dynamic> body = {
       'titulo': titulo,
       'tipo': _tipoSelecionado,
     };
-
-    final Map<String, dynamic> dadosParaRemover = {};
 
     switch (_tipoSelecionado) {
       case 'multipla_escolha':
@@ -72,82 +118,39 @@ class _PergunatasPageState extends State<PergunatasPage> {
             .where((o) => o.isNotEmpty)
             .toList();
         if (opcoes.length < 2) return;
-        dadosValidos['opcoes'] = opcoes;
-        if (_opcaoCorretaIndex != null) {
-          dadosValidos['opcao_correta'] = _opcaoCorretaIndex;
-        } else {
-          dadosParaRemover['opcao_correta'] = FieldValue.delete();
-        }
-        dadosParaRemover['resposta_correta'] = FieldValue.delete();
+        body['opcoes'] = opcoes;
+        body['opcaoCorreta'] = _opcaoCorretaIndex;
+        body['respostaCorreta'] = null;
         break;
 
       case 'verdadeiro_falso':
-        if (_respostaCorretaVF != null) {
-          dadosValidos['resposta_correta'] = _respostaCorretaVF;
-        } else {
-          dadosParaRemover['resposta_correta'] = FieldValue.delete();
-        }
-        dadosParaRemover['opcoes'] = FieldValue.delete();
-        dadosParaRemover['opcao_correta'] = FieldValue.delete();
+        body['respostaCorreta'] = _respostaCorretaVF;
+        body['opcoes'] = null;
+        body['opcaoCorreta'] = null;
         break;
 
       case 'sim_nao':
-        if (_respostaCorretaSN != null) {
-          dadosValidos['resposta_correta'] = _respostaCorretaSN;
-        } else {
-          dadosParaRemover['resposta_correta'] = FieldValue.delete();
-        }
-        dadosParaRemover['opcoes'] = FieldValue.delete();
-        dadosParaRemover['opcao_correta'] = FieldValue.delete();
+        body['respostaCorreta'] = _respostaCorretaSN;
+        body['opcoes'] = null;
+        body['opcaoCorreta'] = null;
         break;
 
       default:
-        dadosParaRemover['opcoes'] = FieldValue.delete();
-        dadosParaRemover['opcao_correta'] = FieldValue.delete();
-        dadosParaRemover['resposta_correta'] = FieldValue.delete();
+        body['opcoes'] = null;
+        body['opcaoCorreta'] = null;
+        body['respostaCorreta'] = null;
     }
 
-    if (docId == null) {
-      await PerguntasDb.add(_professorId, dadosValidos);
+    if (id == null) {
+      final createBody = {...body}..removeWhere((_, v) => v == null);
+      await PerguntasApi.add(createBody);
     } else {
-      await PerguntasDb.update(docId, {...dadosValidos, ...dadosParaRemover});
+      await PerguntasApi.update(id, body);
     }
+    await _recarregar();
   }
 
-  Future<void> _confirmarDelecao(String docId, String titulo) async {
-    final nomeFormulario = await FormulariosDb.formularioQueUsaPergunta(
-      _professorId,
-      docId,
-    );
-    if (!mounted) return;
-
-    if (nomeFormulario != null) {
-      await showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Row(
-            children: [
-              Icon(Icons.warning_amber_rounded, color: Colors.orange),
-              SizedBox(width: 8),
-              Text('Pergunta em uso'),
-            ],
-          ),
-          content: Text(
-            'Esta pergunta está sendo usada no formulário '
-            '"$nomeFormulario".\n\n'
-            'Remova-a do formulário antes de excluí-la.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Entendi'),
-            ),
-          ],
-        ),
-      );
-      return;
-    }
-
+  Future<void> _confirmarDelecao(String id, String titulo) async {
     final confirmar = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -167,28 +170,73 @@ class _PergunatasPageState extends State<PergunatasPage> {
       ),
     );
 
-    if (confirmar == true) await PerguntasDb.delete(docId);
+    if (confirmar != true) return;
+
+    try {
+      await PerguntasApi.delete(id);
+      // Remove da lista já em memória imediatamente, sem esperar um novo GET
+      // — evita qualquer atraso/inconsistência de rede fazendo o item
+      // removido parecer "ainda estar lá". Bump do gen ANTES de ler `_future`
+      // invalida qualquer reload mais antigo ainda em voo.
+      final gen = ++_reqGen;
+      final atual = await _future;
+      if (mounted && gen == _reqGen) {
+        setState(() {
+          _future = Future.value(atual.where((p) => p['id'] != id).toList());
+        });
+      }
+      _recarregar();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      if (e.status == 409) {
+        await showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.warning_amber_rounded, color: Colors.orange),
+                SizedBox(width: 8),
+                Text('Pergunta em uso'),
+              ],
+            ),
+            content: const Text(
+              'Esta pergunta está sendo usada em um ou mais formulários.\n\n'
+              'Remova-a do(s) formulário(s) antes de excluí-la.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Entendi'),
+              ),
+            ],
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.message), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 
-  void _abrirBottomSheet({DocumentSnapshot? doc}) {
+  void _abrirBottomSheet({Map<String, dynamic>? doc}) {
     if (doc != null) {
-      final data = doc.data() as Map<String, dynamic>;
-      _tituloController.text = data['titulo'] ?? '';
-      _tipoSelecionado = data['tipo'] ?? 'escala';
+      _tituloController.text = doc['titulo'] ?? '';
+      _tipoSelecionado = doc['tipo'] ?? 'escala';
 
       if (_tipoSelecionado == 'multipla_escolha') {
         _inicializarOpcoes(
-          existentes: List<String>.from(data['opcoes'] ?? []),
-          opcaoCorreta: data['opcao_correta'] as int?,
+          existentes: List<String>.from(doc['opcoes'] ?? []),
+          opcaoCorreta: doc['opcao_correta'] as int?,
         );
         _respostaCorretaVF = null;
         _respostaCorretaSN = null;
       } else if (_tipoSelecionado == 'verdadeiro_falso') {
-        _respostaCorretaVF = data['resposta_correta'] as String?;
+        _respostaCorretaVF = doc['resposta_correta'] as String?;
         _respostaCorretaSN = null;
         _inicializarOpcoes();
       } else if (_tipoSelecionado == 'sim_nao') {
-        _respostaCorretaSN = data['resposta_correta'] as String?;
+        _respostaCorretaSN = doc['resposta_correta'] as String?;
         _respostaCorretaVF = null;
         _inicializarOpcoes();
       } else {
@@ -203,6 +251,8 @@ class _PergunatasPageState extends State<PergunatasPage> {
       _respostaCorretaVF = null;
       _respostaCorretaSN = null;
     }
+
+    var salvando = false;
 
     showModalBottomSheet(
       context: context,
@@ -595,17 +645,52 @@ class _PergunatasPageState extends State<PergunatasPage> {
                         borderRadius: BorderRadius.circular(12),
                       ),
                     ),
-                    onPressed: () async {
-                      await _salvarPergunta(docId: doc?.id);
-                      if (context.mounted) Navigator.pop(context);
-                    },
-                    child: Text(
-                      doc == null ? 'ADICIONAR' : 'SALVAR',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 15,
-                      ),
-                    ),
+                    onPressed: salvando
+                        ? null
+                        : () async {
+                            setModalState(() => salvando = true);
+                            try {
+                              await _salvarPergunta(id: doc?['id'] as String?);
+                              if (context.mounted) Navigator.pop(context);
+                            } on ApiException catch (e) {
+                              setModalState(() => salvando = false);
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(e.message),
+                                    backgroundColor: Colors.red,
+                                  ),
+                                );
+                              }
+                            } catch (e) {
+                              setModalState(() => salvando = false);
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                        'Não foi possível salvar. Verifique a conexão.'),
+                                    backgroundColor: Colors.red,
+                                  ),
+                                );
+                              }
+                            }
+                          },
+                    child: salvando
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : Text(
+                            doc == null ? 'ADICIONAR' : 'SALVAR',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                            ),
+                          ),
                   ),
                 ),
               ],
@@ -627,92 +712,93 @@ class _PergunatasPageState extends State<PergunatasPage> {
         foregroundColor: Colors.white,
         elevation: 0,
       ),
-      body: StreamBuilder<QuerySnapshot>(
-        stream: PerguntasDb.watchByProfessor(_professorId),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasError) {
-            return Center(child: Text('Erro: ${snapshot.error}'));
-          }
+      body: RefreshIndicator(
+        onRefresh: () async => _recarregar(),
+        child: FutureBuilder<List<Map<String, dynamic>>>(
+          future: _future,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (snapshot.hasError) {
+              return Center(child: Text('Erro: ${snapshot.error}'));
+            }
 
-          final rawDocs = snapshot.data?.docs ?? [];
-          final docs = [...rawDocs]..sort((a, b) {
-              final aTs = ((a.data() as Map)['criado_em'] as Timestamp?)
-                  ?.microsecondsSinceEpoch ?? 0;
-              final bTs = ((b.data() as Map)['criado_em'] as Timestamp?)
-                  ?.microsecondsSinceEpoch ?? 0;
-              return aTs.compareTo(bTs);
-            });
+            final docs = snapshot.data ?? [];
 
-          if (docs.isEmpty) {
-            return const EmptyState(
-              icon: Icons.quiz_outlined,
-              title: 'Nenhuma pergunta ainda.',
-              subtitle: 'Toque em + para adicionar.',
-            );
-          }
-
-          return ListView.builder(
-            padding: const EdgeInsets.all(16),
-            itemCount: docs.length,
-            itemBuilder: (context, index) {
-              final doc = docs[index];
-              final data = doc.data() as Map<String, dynamic>;
-              final titulo = data['titulo'] ?? '';
-              final tipo = data['tipo'] ?? 'escala';
-
-              return Container(
-                margin: const EdgeInsets.only(bottom: 10),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(14),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.05),
-                      blurRadius: 8,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
-                ),
-                child: ListTile(
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 8,
+            if (docs.isEmpty) {
+              return ListView(
+                children: const [
+                  SizedBox(height: 120),
+                  EmptyState(
+                    icon: Icons.quiz_outlined,
+                    title: 'Nenhuma pergunta ainda.',
+                    subtitle: 'Toque em + para adicionar.',
                   ),
-                  leading: QuestionTypeIcon(tipo: tipo),
-                  title: Text(
-                    titulo,
-                    style: const TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                  subtitle: _buildSubtitle(data),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        icon: const Icon(
-                          Icons.edit_outlined,
-                          color: Colors.blueAccent,
-                        ),
-                        tooltip: 'Editar',
-                        onPressed: () => _abrirBottomSheet(doc: doc),
-                      ),
-                      IconButton(
-                        icon: const Icon(
-                          Icons.delete_outline,
-                          color: Colors.redAccent,
-                        ),
-                        tooltip: 'Remover',
-                        onPressed: () => _confirmarDelecao(doc.id, titulo),
+                ],
+              );
+            }
+
+            return ListView.builder(
+              padding: const EdgeInsets.all(16),
+              itemCount: docs.length,
+              itemBuilder: (context, index) {
+                final doc = docs[index];
+                final id = doc['id'] as String;
+                final titulo = doc['titulo'] ?? '';
+                final tipo = doc['tipo'] ?? 'escala';
+
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(14),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.05),
+                        blurRadius: 8,
+                        offset: const Offset(0, 3),
                       ),
                     ],
                   ),
-                ),
-              );
-            },
-          );
-        },
+                  child: ListTile(
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    leading: QuestionTypeIcon(tipo: tipo),
+                    title: Text(
+                      titulo,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    subtitle: _buildSubtitle(doc),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(
+                            Icons.edit_outlined,
+                            color: Colors.blueAccent,
+                          ),
+                          tooltip: 'Editar',
+                          onPressed: () => _abrirBottomSheet(doc: doc),
+                        ),
+                        IconButton(
+                          icon: const Icon(
+                            Icons.delete_outline,
+                            color: Colors.redAccent,
+                          ),
+                          tooltip: 'Remover',
+                          onPressed: () => _confirmarDelecao(id, titulo),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            );
+          },
+        ),
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _abrirBottomSheet(),

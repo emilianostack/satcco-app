@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import '../services/api_client.dart';
 import '../widgets/custom_button.dart';
 import '../widgets/custom_textfield.dart';
 import 'cadastro_page.dart';
@@ -30,14 +30,12 @@ class _LoginPageState extends State<LoginPage> {
         _emailController.text.trim(),
         _passwordController.text.trim(),
       );
-    } on FirebaseAuthException catch (e) {
-      String message = 'Erro ao entrar';
-      if (e.code == 'user-not-found') message = 'Utilizador não encontrado.';
-      if (e.code == 'wrong-password') message = 'Senha incorreta.';
-      if (e.code == 'invalid-email') message = 'E-mail inválido.';
-      _showError(message);
+    } on ApiException catch (e) {
+      _showError(e.message);
+    } catch (e) {
+      _showError('Não foi possível conectar ao servidor.');
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 

@@ -1,14 +1,15 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:printing/printing.dart';
 import 'qr_code_page.dart';
 import '../widgets/empty_state.dart';
+import '../services/api_client.dart';
 import '../services/auth_service.dart';
-import '../services/database/turmas_db.dart';
-import '../services/database/formularios_db.dart';
-import '../services/database/respostas_db.dart';
-import '../services/database/usuarios_db.dart';
+import '../services/api/turmas_api.dart';
+import '../services/api/formularios_api.dart';
+import '../services/api/respostas_api.dart';
+import '../services/api/usuarios_api.dart';
 import '../services/pdf_service.dart';
-import '../services/email/email_service.dart';
+import '../services/route_observer.dart';
 
 class TurmaDetailPage extends StatefulWidget {
   final String turmaId;
@@ -22,8 +23,10 @@ class TurmaDetailPage extends StatefulWidget {
 }
 
 class _TurmaDetailPageState extends State<TurmaDetailPage>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, RouteAware {
   late final TabController _tabController;
+  final _alunosTabKey = GlobalKey<_AlunosTabState>();
+  final _formulariosTabKey = GlobalKey<_FormulariosTabState>();
 
   String get _professorId => AuthService.currentUser!.uid;
 
@@ -34,7 +37,23 @@ class _TurmaDetailPageState extends State<TurmaDetailPage>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    appRouteObserver.subscribe(this, ModalRoute.of(context) as PageRoute);
+  }
+
+  /// Chamado sempre que a rota empilhada por cima desta é fechada (convite,
+  /// atribuir formulário, QR code, etc.) — reforça o recarregamento das
+  /// abas mesmo que o encadeamento manual do Navigator não dispare.
+  @override
+  void didPopNext() {
+    _alunosTabKey.currentState?.reload();
+    _formulariosTabKey.currentState?.reload();
+  }
+
+  @override
   void dispose() {
+    appRouteObserver.unsubscribe(this);
     _tabController.dispose();
     super.dispose();
   }
@@ -52,15 +71,15 @@ class _TurmaDetailPageState extends State<TurmaDetailPage>
         professorDonoId: _professorId,
       ),
     );
+    await _alunosTabKey.currentState?.reload();
   }
 
   Future<void> _atribuirFormulario() async {
-    final formulariosSnap =
-        await FormulariosDb.getByProfessor(_professorId);
+    final formularios = await FormulariosApi.listar();
 
     if (!mounted) return;
 
-    if (formulariosSnap.isEmpty) {
+    if (formularios.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
             content: Text('Não tem formulários criados.'),
@@ -69,12 +88,12 @@ class _TurmaDetailPageState extends State<TurmaDetailPage>
       return;
     }
 
-    final assignedSnap = await TurmasDb.getFormularios(widget.turmaId);
+    final assigned = await TurmasApi.listarFormularios(widget.turmaId);
     if (!mounted) return;
 
-    final assignedIds = assignedSnap.docs.map((d) => d.id).toSet();
+    final assignedIds = assigned.map((d) => d['id'] as String).toSet();
     final available =
-        formulariosSnap.where((d) => !assignedIds.contains(d.id)).toList();
+        formularios.where((d) => !assignedIds.contains(d['id'])).toList();
 
     await showModalBottomSheet(
       context: context,
@@ -115,16 +134,14 @@ class _TurmaDetailPageState extends State<TurmaDetailPage>
                   padding: const EdgeInsets.all(16),
                   itemBuilder: (_, i) {
                     final doc = available[i];
-                    final titulo = (doc.data() as Map<String, dynamic>)[
-                            'titulo'] as String? ??
-                        'Sem título';
+                    final titulo = doc['titulo'] as String? ?? 'Sem título';
                     return ListTile(
                       leading: const Icon(Icons.assignment_outlined,
                           color: Colors.blueAccent),
                       title: Text(titulo),
                       onTap: () async {
-                        await TurmasDb.atribuirFormulario(
-                            widget.turmaId, doc.id, titulo);
+                        await TurmasApi.atribuirFormulario(
+                            widget.turmaId, doc['id'] as String);
                         if (ctx.mounted) Navigator.pop(ctx);
                       },
                     );
@@ -135,6 +152,7 @@ class _TurmaDetailPageState extends State<TurmaDetailPage>
         ),
       ),
     );
+    await _formulariosTabKey.currentState?.reload();
   }
 
   @override
@@ -162,8 +180,12 @@ class _TurmaDetailPageState extends State<TurmaDetailPage>
       body: TabBarView(
         controller: _tabController,
         children: [
-          _AlunosTab(turmaId: widget.turmaId, onConvidar: _convidar),
+          _AlunosTab(
+              key: _alunosTabKey,
+              turmaId: widget.turmaId,
+              onConvidar: _convidar),
           _FormulariosTab(
+            key: _formulariosTabKey,
             turmaId: widget.turmaId,
             turmaNome: widget.turmaNome,
             onAtribuir: _atribuirFormulario,
@@ -181,7 +203,7 @@ class _AlunosTab extends StatefulWidget {
   final String turmaId;
   final VoidCallback onConvidar;
 
-  const _AlunosTab({required this.turmaId, required this.onConvidar});
+  const _AlunosTab({super.key, required this.turmaId, required this.onConvidar});
 
   @override
   State<_AlunosTab> createState() => _AlunosTabState();
@@ -189,26 +211,46 @@ class _AlunosTab extends StatefulWidget {
 
 class _AlunosTabState extends State<_AlunosTab> {
   late Future<List<_ProfConvItem>> _professoresFuture;
+  late Future<List<Map<String, dynamic>>> _alunosFuture;
+
+  /// Evita que um reload mais antigo, ainda em voo, sobrescreva com dados
+  /// desatualizados o resultado de uma ação mais recente.
+  int _reqGen = 0;
 
   @override
   void initState() {
     super.initState();
     _professoresFuture = _carregarProfessores();
+    _alunosFuture = TurmasApi.listarAlunos(widget.turmaId);
+  }
+
+  Future<void> reload() async {
+    final gen = ++_reqGen;
+    try {
+      final resultados = await Future.wait([
+        _carregarProfessores(),
+        TurmasApi.listarAlunos(widget.turmaId),
+      ]);
+      if (mounted && gen == _reqGen) {
+        setState(() {
+          _professoresFuture = Future.value(resultados[0] as List<_ProfConvItem>);
+          _alunosFuture = Future.value(resultados[1] as List<Map<String, dynamic>>);
+        });
+      }
+    } catch (_) {
+      // mantém os dados atuais; o usuário pode puxar para atualizar depois.
+    }
   }
 
   Future<List<_ProfConvItem>> _carregarProfessores() async {
-    final uids = await TurmasDb.getProfessoresConvidados(widget.turmaId);
-    if (uids.isEmpty) return [];
-    final items = await Future.wait(uids.map((uid) async {
-      final doc = await UsuariosDb.getUsuario(uid);
-      final data = doc.data() as Map<String, dynamic>?;
-      return _ProfConvItem(
-        uid: uid,
-        nome: data?['nome'] as String? ?? '—',
-        email: data?['email'] as String? ?? '—',
-      );
-    }));
-    return items.toList();
+    final profs = await TurmasApi.listarProfessoresConvidados(widget.turmaId);
+    return profs
+        .map((p) => _ProfConvItem(
+              uid: p['id'] as String,
+              nome: p['nome'] as String? ?? '—',
+              email: p['email'] as String? ?? '—',
+            ))
+        .toList();
   }
 
   Color _statusColor(bool temConta, bool ativo) {
@@ -224,8 +266,9 @@ class _AlunosTabState extends State<_AlunosTab> {
   }
 
   Future<void> _toggleAtivo(
-      BuildContext context, String docId, bool novoAtivo) async {
-    await TurmasDb.toggleAtivoAluno(widget.turmaId, docId, novoAtivo);
+      BuildContext context, String turmaAlunoId, bool novoAtivo) async {
+    await TurmasApi.toggleAtivoAluno(widget.turmaId, turmaAlunoId, novoAtivo);
+    reload();
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -238,13 +281,13 @@ class _AlunosTabState extends State<_AlunosTab> {
     }
   }
 
-  Future<void> _removerAluno(
-      BuildContext context, String docId, String email, String? alunoId) async {
+  Future<void> _removerAluno(BuildContext context, String turmaAlunoId,
+      String email, String? alunoId) async {
     if (alunoId != null) {
-      final formsSnap = await TurmasDb.getFormularios(widget.turmaId);
-      for (final formDoc in formsSnap.docs) {
-        final jaRespondeu =
-            await RespostasDb.jaRespondeuPorId('${formDoc.id}_$alunoId');
+      final formularios = await TurmasApi.listarFormularios(widget.turmaId);
+      for (final f in formularios) {
+        final respostas = await FormulariosApi.listarRespostas(f['id'] as String);
+        final jaRespondeu = respostas.any((r) => r['aluno_id'] == alunoId);
         if (jaRespondeu) {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -283,8 +326,8 @@ class _AlunosTabState extends State<_AlunosTab> {
     );
 
     if (ok == true) {
-      await TurmasDb.removerAluno(
-          turmaId: widget.turmaId, docId: docId, alunoId: alunoId);
+      await TurmasApi.removerAluno(widget.turmaId, turmaAlunoId);
+      reload();
     }
   }
 
@@ -308,10 +351,8 @@ class _AlunosTabState extends State<_AlunosTab> {
       ),
     );
     if (ok == true) {
-      await TurmasDb.removerConviteProfessor(widget.turmaId, prof.uid);
-      if (mounted) {
-        setState(() => _professoresFuture = _carregarProfessores());
-      }
+      await TurmasApi.removerConviteProfessor(widget.turmaId, prof.uid);
+      if (mounted) reload();
     }
   }
 
@@ -401,14 +442,13 @@ class _AlunosTabState extends State<_AlunosTab> {
     );
   }
 
-  Widget _buildAlunoCard(
-      BuildContext context, DocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
-    final email = (data['email'] as String?) ?? doc.id;
-    final nome = data['nome'] as String?;
-    final alunoId = data['aluno_id'] as String?;
+  Widget _buildAlunoCard(BuildContext context, Map<String, dynamic> aluno) {
+    final turmaAlunoId = aluno['id'] as String;
+    final email = (aluno['email'] as String?) ?? turmaAlunoId;
+    final nome = aluno['nome'] as String?;
+    final alunoId = aluno['aluno_id'] as String?;
     final temConta = alunoId != null;
-    final ativo = temConta ? ((data['ativo'] as bool?) ?? true) : false;
+    final ativo = temConta ? ((aluno['ativo'] as bool?) ?? true) : false;
     final statusColor = _statusColor(temConta, ativo);
 
     return Container(
@@ -472,11 +512,11 @@ class _AlunosTabState extends State<_AlunosTab> {
                   onSelected: (val) {
                     switch (val) {
                       case 'inativar':
-                        _toggleAtivo(context, doc.id, false);
+                        _toggleAtivo(context, turmaAlunoId, false);
                       case 'reativar':
-                        _toggleAtivo(context, doc.id, true);
+                        _toggleAtivo(context, turmaAlunoId, true);
                       case 'remover':
-                        _removerAluno(context, doc.id, email, alunoId);
+                        _removerAluno(context, turmaAlunoId, email, alunoId);
                     }
                   },
                   itemBuilder: (_) => [
@@ -543,29 +583,27 @@ class _AlunosTabState extends State<_AlunosTab> {
           future: _professoresFuture,
           builder: (context, profSnap) {
             final professores = profSnap.data ?? [];
-            return StreamBuilder<QuerySnapshot>(
-              stream: TurmasDb.watchAlunos(widget.turmaId),
+            return FutureBuilder<List<Map<String, dynamic>>>(
+              future: _alunosFuture,
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting &&
                     profSnap.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
                 }
 
-                final docs = [...(snapshot.data?.docs ?? [])]..sort((a, b) {
-                    final aData = a.data() as Map<String, dynamic>;
-                    final bData = b.data() as Map<String, dynamic>;
-                    final aKey = ((aData['nome'] as String?) ??
-                            (aData['email'] as String?) ??
+                final alunos = [...(snapshot.data ?? [])]..sort((a, b) {
+                    final aKey = ((a['nome'] as String?) ??
+                            (a['email'] as String?) ??
                             '')
                         .toLowerCase();
-                    final bKey = ((bData['nome'] as String?) ??
-                            (bData['email'] as String?) ??
+                    final bKey = ((b['nome'] as String?) ??
+                            (b['email'] as String?) ??
                             '')
                         .toLowerCase();
                     return aKey.compareTo(bKey);
                   });
 
-                if (docs.isEmpty && professores.isEmpty) {
+                if (alunos.isEmpty && professores.isEmpty) {
                   return const EmptyState(
                     icon: Icons.person_add_alt_1_outlined,
                     title: 'Nenhum aluno nesta turma.',
@@ -573,12 +611,15 @@ class _AlunosTabState extends State<_AlunosTab> {
                   );
                 }
 
-                return ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
-                  children: [
-                    ...professores.map(_buildProfessorCard),
-                    ...docs.map((doc) => _buildAlunoCard(context, doc)),
-                  ],
+                return RefreshIndicator(
+                  onRefresh: () async => reload(),
+                  child: ListView(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
+                    children: [
+                      ...professores.map(_buildProfessorCard),
+                      ...alunos.map((a) => _buildAlunoCard(context, a)),
+                    ],
+                  ),
                 );
               },
             );
@@ -600,20 +641,53 @@ class _AlunosTabState extends State<_AlunosTab> {
   }
 }
 
-class _FormulariosTab extends StatelessWidget {
+class _FormulariosTab extends StatefulWidget {
   final String turmaId;
   final String turmaNome;
   final VoidCallback onAtribuir;
 
   const _FormulariosTab({
+    super.key,
     required this.turmaId,
     required this.turmaNome,
     required this.onAtribuir,
   });
 
+  @override
+  State<_FormulariosTab> createState() => _FormulariosTabState();
+}
+
+class _FormulariosTabState extends State<_FormulariosTab> {
+  late Future<List<Map<String, dynamic>>> _future;
+
+  /// Evita que um reload mais antigo, ainda em voo, sobrescreva com dados
+  /// desatualizados o resultado de uma ação mais recente.
+  int _reqGen = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = TurmasApi.listarFormularios(widget.turmaId);
+  }
+
+  Future<void> reload() async {
+    final gen = ++_reqGen;
+    try {
+      final dados = await TurmasApi.listarFormularios(widget.turmaId);
+      if (mounted && gen == _reqGen) {
+        setState(() {
+          _future = Future.value(dados);
+        });
+      }
+    } catch (_) {
+      // mantém a lista atual; o usuário pode puxar para atualizar depois.
+    }
+  }
+
   Future<void> _remover(
       BuildContext context, String formularioId, String titulo) async {
-    if (await RespostasDb.hasRespostas(formularioId)) {
+    final respostas = await FormulariosApi.listarRespostas(formularioId);
+    if (respostas.isNotEmpty) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -649,7 +723,17 @@ class _FormulariosTab extends StatelessWidget {
     );
 
     if (ok == true) {
-      await TurmasDb.removerFormulario(turmaId, formularioId);
+      await TurmasApi.removerFormulario(widget.turmaId, formularioId);
+      // Remove da lista já em memória imediatamente, sem esperar um novo GET.
+      final gen = ++_reqGen;
+      final atual = await _future;
+      if (mounted && gen == _reqGen) {
+        setState(() {
+          _future =
+              Future.value(atual.where((f) => f['id'] != formularioId).toList());
+        });
+      }
+      reload();
     }
   }
 
@@ -657,13 +741,13 @@ class _FormulariosTab extends StatelessWidget {
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        StreamBuilder<QuerySnapshot>(
-          stream: TurmasDb.watchFormularios(turmaId),
+        FutureBuilder<List<Map<String, dynamic>>>(
+          future: _future,
           builder: (context, snapshot) {
             if (snapshot.connectionState == ConnectionState.waiting) {
               return const Center(child: CircularProgressIndicator());
             }
-            final docs = snapshot.data?.docs ?? [];
+            final docs = snapshot.data ?? [];
 
             if (docs.isEmpty) {
               return const EmptyState(
@@ -673,99 +757,102 @@ class _FormulariosTab extends StatelessWidget {
               );
             }
 
-            return ListView.builder(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
-              itemCount: docs.length,
-              itemBuilder: (context, index) {
-                final doc = docs[index];
-                final data = doc.data() as Map<String, dynamic>;
-                final titulo = (data['titulo'] as String?) ?? 'Sem título';
+            return RefreshIndicator(
+              onRefresh: () async => reload(),
+              child: ListView.builder(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
+                itemCount: docs.length,
+                itemBuilder: (context, index) {
+                  final doc = docs[index];
+                  final id = doc['id'] as String;
+                  final titulo = (doc['titulo'] as String?) ?? 'Sem título';
 
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(14),
-                    boxShadow: [
-                      BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.05),
-                          blurRadius: 8,
-                          offset: const Offset(0, 3)),
-                    ],
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            const CircleAvatar(
-                              backgroundColor: Color(0xFFE3F2FD),
-                              child: Icon(Icons.assignment_outlined,
-                                  color: Colors.blueAccent),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Text(
-                                titulo,
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.w600,
-                                    fontSize: 15),
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 10),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(14),
+                      boxShadow: [
+                        BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.05),
+                            blurRadius: 8,
+                            offset: const Offset(0, 3)),
+                      ],
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const CircleAvatar(
+                                backgroundColor: Color(0xFFE3F2FD),
+                                child: Icon(Icons.assignment_outlined,
+                                    color: Colors.blueAccent),
                               ),
-                            ),
-                          ],
-                        ),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.end,
-                          children: [
-                            IconButton(
-                              icon: const Icon(Icons.picture_as_pdf_outlined,
-                                  color: Colors.green),
-                              tooltip: 'Relatório de Notas',
-                              onPressed: () => showModalBottomSheet(
-                                context: context,
-                                shape: const RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.vertical(
-                                      top: Radius.circular(20)),
-                                ),
-                                builder: (_) => _RelatorioSheet(
-                                  turmaId: turmaId,
-                                  turmaNome: turmaNome,
-                                  formularioId: doc.id,
-                                  tituloFormulario: titulo,
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  titulo,
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 15),
                                 ),
                               ),
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.qr_code,
-                                  color: Colors.blueAccent),
-                              tooltip: 'Gerar QR Code',
-                              onPressed: () => Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => QrCodePage(
-                                    formularioId: doc.id,
-                                    formularioTitulo: titulo,
-                                    turmaId: turmaId,
+                            ],
+                          ),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.picture_as_pdf_outlined,
+                                    color: Colors.green),
+                                tooltip: 'Relatório de Notas',
+                                onPressed: () => showModalBottomSheet(
+                                  context: context,
+                                  shape: const RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.vertical(
+                                        top: Radius.circular(20)),
+                                  ),
+                                  builder: (_) => _RelatorioSheet(
+                                    turmaId: widget.turmaId,
+                                    turmaNome: widget.turmaNome,
+                                    formularioId: id,
+                                    tituloFormulario: titulo,
                                   ),
                                 ),
                               ),
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.delete_outline,
-                                  color: Colors.redAccent),
-                              tooltip: 'Remover da turma',
-                              onPressed: () =>
-                                  _remover(context, doc.id, titulo),
-                            ),
-                          ],
-                        ),
-                      ],
+                              IconButton(
+                                icon: const Icon(Icons.qr_code,
+                                    color: Colors.blueAccent),
+                                tooltip: 'Gerar QR Code',
+                                onPressed: () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => QrCodePage(
+                                      formularioId: id,
+                                      formularioTitulo: titulo,
+                                      turmaId: widget.turmaId,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete_outline,
+                                    color: Colors.redAccent),
+                                tooltip: 'Remover da turma',
+                                onPressed: () =>
+                                    _remover(context, id, titulo),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                );
-              },
+                  );
+                },
+              ),
             );
           },
         ),
@@ -773,7 +860,7 @@ class _FormulariosTab extends StatelessWidget {
           bottom: 16,
           right: 16,
           child: FloatingActionButton.extended(
-            onPressed: onAtribuir,
+            onPressed: widget.onAtribuir,
             backgroundColor: Colors.blueAccent,
             foregroundColor: Colors.white,
             icon: const Icon(Icons.add),
@@ -806,24 +893,22 @@ class _NotasTabState extends State<_NotasTab> {
   }
 
   Future<_NotasTabData> _carregarDados() async {
-    final formulariosSnap = await TurmasDb.getFormularios(widget.turmaId);
-    final formularios = await Future.wait(formulariosSnap.docs.map((d) async {
-      final data = d.data() as Map<String, dynamic>;
-      final respostasSnap = await RespostasDb.getByFormulario(d.id);
+    final formulariosList = await TurmasApi.listarFormularios(widget.turmaId);
+    final formularios = await Future.wait(formulariosList.map((f) async {
+      final respostas = await FormulariosApi.listarRespostas(f['id'] as String);
       return _FormularioInfo(
-        id: d.id,
-        titulo: (data['titulo'] as String?) ?? 'Sem título',
-        totalRespostas: respostasSnap.docs.length,
+        id: f['id'] as String,
+        titulo: (f['titulo'] as String?) ?? 'Sem título',
+        totalRespostas: respostas.length,
       );
     }));
 
-    final alunosSnap = await TurmasDb.watchAlunos(widget.turmaId).first;
-    final alunos = alunosSnap.docs.map((d) {
-      final data = d.data() as Map<String, dynamic>;
+    final alunosList = await TurmasApi.listarAlunos(widget.turmaId);
+    final alunos = alunosList.map((a) {
       return _AlunoInfo(
-        email: (data['email'] as String?) ?? d.id,
-        nome: data['nome'] as String?,
-        alunoId: data['aluno_id'] as String?,
+        email: (a['email'] as String?) ?? '',
+        nome: a['nome'] as String?,
+        alunoId: a['aluno_id'] as String?,
       );
     }).toList();
 
@@ -854,7 +939,12 @@ class _NotasTabState extends State<_NotasTab> {
 
         return RefreshIndicator(
           onRefresh: () async {
-            setState(() => _future = _carregarDados());
+            final dados = await _carregarDados();
+            if (mounted) {
+              setState(() {
+                _future = Future.value(dados);
+              });
+            }
           },
           child: ListView.builder(
             padding: const EdgeInsets.all(16),
@@ -926,28 +1016,22 @@ class _FormularioNotasCardState extends State<_FormularioNotasCard> {
   bool _loaded = false;
   List<_AlunoNota> _notas = [];
 
+  double? _parseNota(dynamic valor) =>
+      valor != null ? double.tryParse(valor.toString()) : null;
+
+  /// A nota já vem calculada pelo backend no momento do submit — não é mais
+  /// preciso recalcular a partir das respostas individuais aqui.
   Future<void> _carregar() async {
     if (_loaded) return;
     setState(() => _loading = true);
 
     try {
-      final pergsSnap =
-          await FormulariosDb.getPerguntasSnap(widget.formulario.id);
-      final perguntas = <String, Map<String, dynamic>>{};
-      for (final d in pergsSnap.docs) {
-        final data = d.data() as Map<String, dynamic>;
-        final pid = data['pergunta_id'] as String?;
-        if (pid != null) perguntas[pid] = data;
-      }
-
-      final respostasSnap =
-          await RespostasDb.getByFormulario(widget.formulario.id);
-      final respostasByAluno = <String, Map<String, dynamic>>{};
-      for (final d in respostasSnap.docs) {
-        final data = d.data() as Map<String, dynamic>;
-        final alunoId = data['aluno_id'] as String?;
-        if (alunoId != null) respostasByAluno[alunoId] = data;
-      }
+      final respostas =
+          await FormulariosApi.listarRespostas(widget.formulario.id);
+      final respostasByAluno = <String, Map<String, dynamic>>{
+        for (final r in respostas)
+          if (r['aluno_id'] != null) r['aluno_id'] as String: r,
+      };
 
       final notas = <_AlunoNota>[];
       for (final aluno in widget.alunos) {
@@ -963,44 +1047,15 @@ class _FormularioNotasCardState extends State<_FormularioNotasCard> {
           continue;
         }
 
-        final respostas =
-            List<Map<String, dynamic>>.from(resposta['respostas'] ?? []);
-        double totalPeso = 0;
-        double totalNota = 0;
-
-        for (final r in respostas) {
-          final pergId = r['pergunta_id'] as String?;
-          final tipo = (r['tipo'] as String?) ?? '';
-          final peso = (r['peso'] as num?)?.toDouble() ?? 1.0;
-          final valor = r['valor'];
-          final perg = pergId != null ? perguntas[pergId] : null;
-
-          switch (tipo) {
-            case 'escala':
-              totalPeso += peso;
-              totalNota += ((valor as num?)?.toDouble() ?? 0) * peso;
-            case 'sim_nao':
-            case 'verdadeiro_falso':
-              final correta = perg?['resposta_correta'] as String?;
-              if (correta == null) break;
-              totalPeso += peso;
-              totalNota += (valor == correta) ? peso * 10.0 : 0;
-            case 'multipla_escolha':
-              final correta = perg?['opcao_correta'];
-              if (correta == null) break;
-              totalPeso += peso;
-              totalNota += (valor == correta) ? peso * 10.0 : 0;
-            default:
-              break;
-          }
-        }
-
-        final media = totalPeso > 0 ? totalNota / totalPeso : null;
         notas.add(_AlunoNota(
-            aluno: aluno, nota: media, semConta: false, respondeu: true));
+          aluno: aluno,
+          nota: _parseNota(resposta['nota']),
+          semConta: false,
+          respondeu: true,
+        ));
       }
 
-      // Encontra respostas de professores convidados (is_professor == true, fora da lista de alunos)
+      // Respostas de professores convidados (is_professor == true, fora da lista de alunos)
       final processedIds = widget.alunos
           .where((a) => a.alunoId != null)
           .map((a) => a.alunoId!)
@@ -1008,48 +1063,18 @@ class _FormularioNotasCardState extends State<_FormularioNotasCard> {
 
       for (final entry in respostasByAluno.entries) {
         if (processedIds.contains(entry.key)) continue;
-        final profData = entry.value;
-        if ((profData['is_professor'] as bool?) != true) continue;
+        final resposta = entry.value;
+        if ((resposta['is_professor'] as bool?) != true) continue;
 
-        double pTotalPeso = 0;
-        double pTotalNota = 0;
-        final profRespostas =
-            List<Map<String, dynamic>>.from(profData['respostas'] ?? []);
-        for (final r in profRespostas) {
-          final pergId = r['pergunta_id'] as String?;
-          final tipo = (r['tipo'] as String?) ?? '';
-          final peso = (r['peso'] as num?)?.toDouble() ?? 1.0;
-          final valor = r['valor'];
-          final perg = pergId != null ? perguntas[pergId] : null;
-          switch (tipo) {
-            case 'escala':
-              pTotalPeso += peso;
-              pTotalNota += ((valor as num?)?.toDouble() ?? 0) * peso;
-            case 'sim_nao':
-            case 'verdadeiro_falso':
-              final correta = perg?['resposta_correta'] as String?;
-              if (correta == null) break;
-              pTotalPeso += peso;
-              pTotalNota += (valor == correta) ? peso * 10.0 : 0;
-            case 'multipla_escolha':
-              final correta = perg?['opcao_correta'];
-              if (correta == null) break;
-              pTotalPeso += peso;
-              pTotalNota += (valor == correta) ? peso * 10.0 : 0;
-            default:
-              break;
-          }
-        }
-        final profMedia = pTotalPeso > 0 ? pTotalNota / pTotalPeso : null;
         notas.insert(
           0,
           _AlunoNota(
             aluno: _AlunoInfo(
-              email: (profData['aluno_email'] as String?) ?? '',
-              nome: (profData['aluno_nome'] as String?) ?? 'Professor',
+              email: (resposta['aluno_email'] as String?) ?? '',
+              nome: (resposta['aluno_nome'] as String?) ?? 'Professor',
               alunoId: entry.key,
             ),
-            nota: profMedia,
+            nota: _parseNota(resposta['nota']),
             semConta: false,
             respondeu: true,
             isProfessor: true,
@@ -1212,197 +1237,113 @@ class _InfoBadge extends StatelessWidget {
   }
 }
 
+String _formatarValor(String tipo, dynamic valor, Map<String, dynamic>? perg) {
+  switch (tipo) {
+    case 'escala':
+      final n = double.tryParse(valor?.toString() ?? '');
+      return n != null ? '${n.round()} / 10' : '—';
+    case 'sim_nao':
+      return valor?.toString() ?? '—';
+    case 'verdadeiro_falso':
+      return valor == 'verdadeiro'
+          ? 'Verdadeiro'
+          : valor == 'falso'
+              ? 'Falso'
+              : '—';
+    case 'multipla_escolha':
+      final opcoes = List<String>.from(perg?['opcoes'] ?? []);
+      final idx = int.tryParse(valor?.toString() ?? '');
+      return (idx != null && idx >= 0 && idx < opcoes.length)
+          ? opcoes[idx]
+          : '—';
+    default:
+      return valor?.toString() ?? '—';
+  }
+}
+
 /// Retorna dados do relatório incluindo respostas formatadas por aluno.
 /// Cada mapa tem: nome, email, nota, data, respostas (List ou null), is_professor (bool).
+/// A nota vem pronta do backend (calculada no submit); aqui só formatamos os
+/// valores individuais de cada pergunta para exibição no PDF.
 Future<Map<String, dynamic>> _carregarNotasRelatorio({
   required String turmaId,
   required String formularioId,
 }) async {
-  final perguntasOrdenadas = await FormulariosDb.getPerguntas(formularioId);
-  final perguntas = <String, Map<String, dynamic>>{};
-  for (final p in perguntasOrdenadas) {
-    final pid = p['pergunta_id'] as String?;
-    if (pid != null) perguntas[pid] = p;
-  }
+  final formularioDetalhe = await FormulariosApi.getFormulario(formularioId);
+  final perguntasOrdenadas =
+      ((formularioDetalhe['perguntas'] as List?) ?? []).cast<Map<String, dynamic>>();
+  final perguntas = <String, Map<String, dynamic>>{
+    for (final p in perguntasOrdenadas) p['pergunta_id'] as String: p,
+  };
 
-  final alunosSnap = await TurmasDb.watchAlunos(turmaId).first;
-  final respostasSnap = await RespostasDb.getByFormulario(formularioId);
-  final respostasByAluno = <String, Map<String, dynamic>>{};
-  for (final d in respostasSnap.docs) {
-    final data = d.data() as Map<String, dynamic>;
-    final alunoId = data['aluno_id'] as String?;
-    if (alunoId != null) respostasByAluno[alunoId] = data;
+  final alunosTurma = await TurmasApi.listarAlunos(turmaId);
+  final respostasResumo = await FormulariosApi.listarRespostas(formularioId);
+  final respostasByAlunoId = <String, Map<String, dynamic>>{
+    for (final r in respostasResumo)
+      if (r['aluno_id'] != null) r['aluno_id'] as String: r,
+  };
+
+  Future<List<Map<String, dynamic>>> formatarItens(String respostaId) async {
+    final detalhe = await RespostasApi.getRespostaById(respostaId);
+    final itens = ((detalhe['itens'] as List?) ?? []).cast<Map<String, dynamic>>();
+    return itens.map((item) {
+      final perg = perguntas[item['pergunta_id']];
+      final tipo = perg?['tipo'] as String? ?? '';
+      final titulo = perg?['titulo'] as String? ?? '—';
+      return {
+        'titulo': titulo,
+        'tipo': tipo,
+        'valor_formatado': _formatarValor(tipo, item['valor'], perg),
+      };
+    }).toList();
   }
 
   final alunos = <Map<String, dynamic>>[];
-  for (final alunoDoc in alunosSnap.docs) {
-    final alunoData = alunoDoc.data() as Map<String, dynamic>;
-    final email = (alunoData['email'] as String?) ?? alunoDoc.id;
-    final nomeBase = alunoData['nome'] as String?;
-    final alunoId = alunoData['aluno_id'] as String?;
+  for (final a in alunosTurma) {
+    final email = (a['email'] as String?) ?? '';
+    final nomeBase = a['nome'] as String?;
+    final alunoId = a['aluno_id'] as String?;
 
-    if (alunoId == null) {
-      alunos.add({'nome': nomeBase ?? email, 'email': email, 'nota': null, 'data': null, 'respostas': null});
+    final resumo = alunoId != null ? respostasByAlunoId[alunoId] : null;
+    if (resumo == null) {
+      alunos.add({
+        'nome': nomeBase ?? email,
+        'email': email,
+        'nota': null,
+        'data': null,
+        'respostas': null,
+      });
       continue;
     }
 
-    final resposta = respostasByAluno[alunoId];
-    if (resposta == null) {
-      alunos.add({'nome': nomeBase ?? email, 'email': email, 'nota': null, 'data': null, 'respostas': null});
-      continue;
-    }
-
-    final nome = (resposta['aluno_nome'] as String?) ?? nomeBase ?? email;
-    final respostas =
-        List<Map<String, dynamic>>.from(resposta['respostas'] ?? []);
-
-    double totalPeso = 0;
-    double totalNota = 0;
-
-    final respostasFormatadas = <Map<String, dynamic>>[];
-    for (final r in respostas) {
-      final pergId = r['pergunta_id'] as String?;
-      final tipo = (r['tipo'] as String?) ?? '';
-      final peso = (r['peso'] as num?)?.toDouble() ?? 1.0;
-      final valor = r['valor'];
-      final perg = pergId != null ? perguntas[pergId] : null;
-      final titulo = (r['titulo'] as String?) ?? (perg?['titulo'] as String?) ?? '—';
-
-      String valorFmt;
-      switch (tipo) {
-        case 'escala':
-          totalPeso += peso;
-          totalNota += ((valor as num?)?.toDouble() ?? 0) * peso;
-          valorFmt = '${(valor as num).round()} / 10';
-        case 'sim_nao':
-          final correta = perg?['resposta_correta'] as String?;
-          if (correta != null) {
-            totalPeso += peso;
-            totalNota += (valor == correta) ? peso * 10.0 : 0;
-          }
-          valorFmt = valor?.toString() ?? '—';
-        case 'verdadeiro_falso':
-          final correta = perg?['resposta_correta'] as String?;
-          if (correta != null) {
-            totalPeso += peso;
-            totalNota += (valor == correta) ? peso * 10.0 : 0;
-          }
-          valorFmt = valor == 'verdadeiro'
-              ? 'Verdadeiro'
-              : valor == 'falso'
-                  ? 'Falso'
-                  : '—';
-        case 'multipla_escolha':
-          final correta = perg?['opcao_correta'];
-          if (correta != null) {
-            totalPeso += peso;
-            totalNota += (valor == correta) ? peso * 10.0 : 0;
-          }
-          final opcoes = List<String>.from(perg?['opcoes'] ?? []);
-          final idx = valor is int ? valor : int.tryParse(valor?.toString() ?? '');
-          valorFmt = (idx != null && idx >= 0 && idx < opcoes.length)
-              ? opcoes[idx]
-              : '—';
-        default:
-          valorFmt = valor?.toString() ?? '—';
-      }
-
-      respostasFormatadas.add({'titulo': titulo, 'tipo': tipo, 'valor_formatado': valorFmt});
-    }
-
-    final media = totalPeso > 0 ? totalNota / totalPeso : null;
-    final respondidoEm =
-        (resposta['respondido_em'] as Timestamp?)?.toDate();
     alunos.add({
-      'nome': nome,
+      'nome': (resumo['aluno_nome'] as String?) ?? nomeBase ?? email,
       'email': email,
-      'nota': media,
-      'data': respondidoEm,
-      'respostas': respostasFormatadas,
+      'nota': resumo['nota'] != null ? double.tryParse(resumo['nota'].toString()) : null,
+      'data': resumo['respondido_em'] != null
+          ? DateTime.parse(resumo['respondido_em'] as String)
+          : null,
+      'respostas': await formatarItens(resumo['resposta_id'] as String),
     });
   }
 
   // Respostas de professores convidados (is_professor == true, fora da lista de alunos)
-  final alunoIdSet = alunosSnap.docs
-      .map((d) => (d.data() as Map<String, dynamic>)['aluno_id'] as String?)
-      .whereType<String>()
-      .toSet();
+  final alunoIdSet =
+      alunosTurma.map((a) => a['aluno_id'] as String?).whereType<String>().toSet();
 
-  for (final entry in respostasByAluno.entries) {
+  for (final entry in respostasByAlunoId.entries) {
     if (alunoIdSet.contains(entry.key)) continue;
-    final profRespData = entry.value;
-    if ((profRespData['is_professor'] as bool?) != true) continue;
+    final resumo = entry.value;
+    if ((resumo['is_professor'] as bool?) != true) continue;
 
-    final profNome = (profRespData['aluno_nome'] as String?) ?? 'Professor';
-    final profEmail = (profRespData['aluno_email'] as String?) ?? '';
-    final profRespostas =
-        List<Map<String, dynamic>>.from(profRespData['respostas'] ?? []);
-
-    double pTotalPeso = 0;
-    double pTotalNota = 0;
-    final profRespostasFormatadas = <Map<String, dynamic>>[];
-
-    for (final r in profRespostas) {
-      final pergId = r['pergunta_id'] as String?;
-      final tipo = (r['tipo'] as String?) ?? '';
-      final peso = (r['peso'] as num?)?.toDouble() ?? 1.0;
-      final valor = r['valor'];
-      final perg = pergId != null ? perguntas[pergId] : null;
-      final titulo =
-          (r['titulo'] as String?) ?? (perg?['titulo'] as String?) ?? '—';
-
-      String valorFmt;
-      switch (tipo) {
-        case 'escala':
-          pTotalPeso += peso;
-          pTotalNota += ((valor as num?)?.toDouble() ?? 0) * peso;
-          valorFmt = '${(valor as num).round()} / 10';
-        case 'sim_nao':
-          final correta = perg?['resposta_correta'] as String?;
-          if (correta != null) {
-            pTotalPeso += peso;
-            pTotalNota += (valor == correta) ? peso * 10.0 : 0;
-          }
-          valorFmt = valor?.toString() ?? '—';
-        case 'verdadeiro_falso':
-          final correta = perg?['resposta_correta'] as String?;
-          if (correta != null) {
-            pTotalPeso += peso;
-            pTotalNota += (valor == correta) ? peso * 10.0 : 0;
-          }
-          valorFmt = valor == 'verdadeiro'
-              ? 'Verdadeiro'
-              : valor == 'falso'
-                  ? 'Falso'
-                  : '—';
-        case 'multipla_escolha':
-          final correta = perg?['opcao_correta'];
-          if (correta != null) {
-            pTotalPeso += peso;
-            pTotalNota += (valor == correta) ? peso * 10.0 : 0;
-          }
-          final opcoes = List<String>.from(perg?['opcoes'] ?? []);
-          final idx =
-              valor is int ? valor : int.tryParse(valor?.toString() ?? '');
-          valorFmt = (idx != null && idx >= 0 && idx < opcoes.length)
-              ? opcoes[idx]
-              : '—';
-        default:
-          valorFmt = valor?.toString() ?? '—';
-      }
-      profRespostasFormatadas
-          .add({'titulo': titulo, 'tipo': tipo, 'valor_formatado': valorFmt});
-    }
-
-    final profMedia = pTotalPeso > 0 ? pTotalNota / pTotalPeso : null;
-    final profRespondidoEm =
-        (profRespData['respondido_em'] as Timestamp?)?.toDate();
     alunos.insert(0, {
-      'nome': profNome,
-      'email': profEmail,
-      'nota': profMedia,
-      'data': profRespondidoEm,
-      'respostas': profRespostasFormatadas,
+      'nome': (resumo['aluno_nome'] as String?) ?? 'Professor',
+      'email': (resumo['aluno_email'] as String?) ?? '',
+      'nota': resumo['nota'] != null ? double.tryParse(resumo['nota'].toString()) : null,
+      'data': resumo['respondido_em'] != null
+          ? DateTime.parse(resumo['respondido_em'] as String)
+          : null,
+      'respostas': await formatarItens(resumo['resposta_id'] as String),
       'is_professor': true,
     });
   }
@@ -1432,7 +1373,7 @@ class _RelatorioSheet extends StatefulWidget {
 
 class _RelatorioSheetState extends State<_RelatorioSheet> {
   bool _loadingPdf = false;
-  bool _loadingEmail = false;
+  bool _loadingCompartilhar = false;
 
   Future<void> _gerarPdf() async {
     setState(() => _loadingPdf = true);
@@ -1464,12 +1405,9 @@ class _RelatorioSheetState extends State<_RelatorioSheet> {
     }
   }
 
-  Future<void> _enviarEmail() async {
-    setState(() => _loadingEmail = true);
+  Future<void> _compartilhar() async {
+    setState(() => _loadingCompartilhar = true);
     try {
-      final profEmail = AuthService.currentUser?.email ?? '';
-      if (profEmail.isEmpty) throw Exception('E-mail não encontrado.');
-
       final relatorio = await _carregarNotasRelatorio(
         turmaId: widget.turmaId,
         formularioId: widget.formularioId,
@@ -1486,33 +1424,22 @@ class _RelatorioSheetState extends State<_RelatorioSheet> {
         alunos: alunos,
       );
 
-      await EmailService.enviarRelatorioFormulario(
-        destinatario: profEmail,
-        tituloFormulario: widget.tituloFormulario,
-        turmaNome: widget.turmaNome,
-        totalAlunos: alunos.length,
-        pdfBytes: pdfBytes,
+      await Printing.sharePdf(
+        bytes: pdfBytes,
+        filename: '${widget.tituloFormulario}.pdf',
       );
 
-      if (mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Relatório enviado para $profEmail'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      }
+      if (mounted) Navigator.pop(context);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text('Erro ao enviar: $e'),
+              content: Text('Erro ao compartilhar: $e'),
               backgroundColor: Colors.red),
         );
       }
     } finally {
-      if (mounted) setState(() => _loadingEmail = false);
+      if (mounted) setState(() => _loadingCompartilhar = false);
     }
   }
 
@@ -1562,16 +1489,16 @@ class _RelatorioSheetState extends State<_RelatorioSheet> {
           ListTile(
             leading: CircleAvatar(
               backgroundColor: Colors.blue.shade50,
-              child: _loadingEmail
+              child: _loadingCompartilhar
                   ? const SizedBox(
                       width: 20,
                       height: 20,
                       child: CircularProgressIndicator(strokeWidth: 2))
-                  : Icon(Icons.email_outlined, color: Colors.blue.shade700),
+                  : Icon(Icons.share_outlined, color: Colors.blue.shade700),
             ),
-            title: const Text('Enviar por Email'),
-            subtitle: const Text('Enviar relatório ao seu e-mail'),
-            onTap: _loadingEmail ? null : _enviarEmail,
+            title: const Text('Compartilhar'),
+            subtitle: const Text('Enviar o PDF por email, WhatsApp, etc.'),
+            onTap: _loadingCompartilhar ? null : _compartilhar,
           ),
         ],
       ),
@@ -1680,6 +1607,7 @@ class _AlunoTabContentState extends State<_AlunoTabContent> {
   final _emailCtrl = TextEditingController();
   bool _carregando = false;
   String? _erro;
+  String? _sucesso;
 
   @override
   void dispose() {
@@ -1690,64 +1618,34 @@ class _AlunoTabContentState extends State<_AlunoTabContent> {
   Future<void> _convidar() async {
     final email = _emailCtrl.text.trim().toLowerCase();
     if (!email.contains('@')) {
-      setState(() => _erro = 'Informe um e-mail válido.');
+      setState(() {
+        _erro = 'Informe um e-mail válido.';
+        _sucesso = null;
+      });
       return;
     }
     setState(() {
       _carregando = true;
       _erro = null;
+      _sucesso = null;
     });
     try {
-      final existing = await TurmasDb.getAluno(widget.turmaId, email);
-      if (existing.exists) {
-        setState(() {
-          _erro = 'Este aluno já foi convidado.';
-          _carregando = false;
-        });
-        return;
-      }
-
-      final usuariosSnap = await UsuariosDb.findByEmail(email);
-      String? alunoId;
-      String? alunoNome;
-      if (usuariosSnap.docs.isNotEmpty) {
-        final userDoc = usuariosSnap.docs.first;
-        final userData = userDoc.data() as Map<String, dynamic>;
-        if (userData['tipo'] == 'aluno') {
-          alunoId = userDoc.id;
-          alunoNome = userData['nome'] as String?;
-        }
-      }
-
-      await TurmasDb.convidarAluno(
-        turmaId: widget.turmaId,
-        email: email,
-        alunoId: alunoId,
-        alunoNome: alunoNome,
-      );
-
-      EmailService.enviarConviteAluno(
-        destinatario: email,
-        turmaNome: widget.turmaNome,
-      ).catchError((_) {});
+      // O backend resolve se o email já tem conta, grava o convite e envia
+      // o e-mail de convite — é seguro chamar de novo para o mesmo email.
+      await TurmasApi.convidarAluno(turmaId: widget.turmaId, email: email);
 
       if (mounted) {
         _emailCtrl.clear();
-        setState(() => _carregando = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(alunoId != null
-                ? 'Aluno adicionado! Email de convite enviado.'
-                : 'Convite registado. Email enviado ao aluno.'),
-            backgroundColor: Colors.green,
-            duration: const Duration(seconds: 3),
-          ),
-        );
+        setState(() {
+          _carregando = false;
+          _sucesso = 'Convite enviado! O aluno receberá um e-mail.';
+        });
       }
-    } catch (e) {
+    } on ApiException catch (e) {
       if (mounted) {
         setState(() {
-          _erro = e.toString();
+          _erro = e.message;
+          _sucesso = null;
           _carregando = false;
         });
       }
@@ -1770,7 +1668,12 @@ class _AlunoTabContentState extends State<_AlunoTabContent> {
             textInputAction: TextInputAction.done,
             onSubmitted: (_) => _convidar(),
             onChanged: (_) {
-              if (_erro != null) setState(() => _erro = null);
+              if (_erro != null || _sucesso != null) {
+                setState(() {
+                  _erro = null;
+                  _sucesso = null;
+                });
+              }
             },
             decoration: InputDecoration(
               hintText: 'email@exemplo.com',
@@ -1783,6 +1686,22 @@ class _AlunoTabContentState extends State<_AlunoTabContent> {
               fillColor: Colors.grey.shade50,
             ),
           ),
+          if (_sucesso != null) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                const Icon(Icons.check_circle, color: Colors.green, size: 18),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    _sucesso!,
+                    style: const TextStyle(
+                        color: Colors.green, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ],
+            ),
+          ],
           const SizedBox(height: 16),
           SizedBox(
             width: double.infinity,
@@ -1852,19 +1771,16 @@ class _ProfessorTabContentState extends State<_ProfessorTabContent> {
       _erro = null;
     });
     try {
-      final uids = await TurmasDb.getProfessoresConvidados(widget.turmaId);
-      final items = await Future.wait(uids.map((uid) async {
-        final doc = await UsuariosDb.getUsuario(uid);
-        final data = doc.data() as Map<String, dynamic>?;
-        return _ProfConvItem(
-          uid: uid,
-          nome: data?['nome'] as String? ?? '—',
-          email: data?['email'] as String? ?? '—',
-        );
-      }));
+      final profs = await TurmasApi.listarProfessoresConvidados(widget.turmaId);
       if (mounted) {
         setState(() {
-          _convidados = items.toList();
+          _convidados = profs
+              .map((p) => _ProfConvItem(
+                    uid: p['id'] as String,
+                    nome: p['nome'] as String? ?? '—',
+                    email: p['email'] as String? ?? '—',
+                  ))
+              .toList();
           _carregando = false;
         });
       }
@@ -1885,7 +1801,7 @@ class _ProfessorTabContentState extends State<_ProfessorTabContent> {
       return;
     }
 
-    final currentEmail = AuthService.currentUser?.email?.toLowerCase() ?? '';
+    final currentEmail = AuthService.currentUser?.email.toLowerCase() ?? '';
     if (email == currentEmail) {
       setState(() => _erro = 'Você não pode se convidar para sua própria turma.');
       return;
@@ -1896,23 +1812,22 @@ class _ProfessorTabContentState extends State<_ProfessorTabContent> {
       _erro = null;
     });
     try {
-      final snap = await UsuariosDb.findByEmail(email);
-      if (snap.docs.isEmpty) {
+      final usuario = await UsuariosApi.buscarPorEmail(email);
+      if (usuario == null) {
         setState(() {
           _erro = 'Nenhum usuário encontrado com este email.';
           _adicionando = false;
         });
         return;
       }
-      final userDoc = snap.docs.first;
-      if (userDoc.id == widget.professorDonoId) {
+      if (usuario['id'] == widget.professorDonoId) {
         setState(() {
           _erro = 'Você não pode se convidar para sua própria turma.';
           _adicionando = false;
         });
         return;
       }
-      final tipo = (userDoc.data() as Map<String, dynamic>)['tipo'] as String? ?? '';
+      final tipo = usuario['tipo'] as String? ?? '';
       if (tipo != 'professor') {
         setState(() {
           _erro = 'Este usuário não é um professor.';
@@ -1920,25 +1835,21 @@ class _ProfessorTabContentState extends State<_ProfessorTabContent> {
         });
         return;
       }
-      if (_convidados.any((c) => c.uid == userDoc.id)) {
+      if (_convidados.any((c) => c.uid == usuario['id'])) {
         setState(() {
           _erro = 'Este professor já foi convidado.';
           _adicionando = false;
         });
         return;
       }
-      await TurmasDb.convidarProfessor(widget.turmaId, userDoc.id);
-      EmailService.enviarConviteProfessor(
-        destinatario: email,
-        turmaNome: widget.turmaNome,
-      ).catchError((_) {});
+      await TurmasApi.convidarProfessor(widget.turmaId, usuario['id'] as String);
       _emailCtrl.clear();
       await _carregar();
       if (mounted) setState(() => _adicionando = false);
-    } catch (e) {
+    } on ApiException catch (e) {
       if (mounted) {
         setState(() {
-          _erro = e.toString();
+          _erro = e.message;
           _adicionando = false;
         });
       }
@@ -1946,7 +1857,7 @@ class _ProfessorTabContentState extends State<_ProfessorTabContent> {
   }
 
   Future<void> _remover(String uid) async {
-    await TurmasDb.removerConviteProfessor(widget.turmaId, uid);
+    await TurmasApi.removerConviteProfessor(widget.turmaId, uid);
     await _carregar();
   }
 

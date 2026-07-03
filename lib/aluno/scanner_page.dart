@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'responder_formulario_page.dart';
-import '../services/database/sessoes_db.dart';
+import '../services/api_client.dart';
+import '../services/api/sessoes_api.dart';
 
 class ScannerPage extends StatefulWidget {
   const ScannerPage({super.key});
@@ -30,34 +31,30 @@ class _ScannerPageState extends State<ScannerPage> {
     await _controller.stop();
 
     try {
-      final sessaoDoc = await SessoesDb.getSessao(rawValue);
+      final resultado = await SessoesApi.consultarPorToken(rawValue);
+      final sessao = resultado['sessao'] as Map<String, dynamic>;
+      final formularioId = sessao['formulario_id'] as String;
 
       if (!mounted) return;
-
-      if (!sessaoDoc.exists) {
-        _mostrarErro('QR Code inválido ou não reconhecido.');
-        return;
-      }
-
-      final data = sessaoDoc.data() as Map<String, dynamic>;
-
-      if (data['status'] != 'ativa') {
-        _mostrarErro('Esta sessão já foi encerrada pelo professor.');
-        return;
-      }
-
-      final formularioId = data['formulario_id'] as String;
-
-      if (!mounted) return;
-      Navigator.pushReplacement(
+      // Empilha (não substitui) e só fecha o scanner depois que a página de
+      // resposta for encerrada — usar pushReplacement aqui completaria a
+      // promise do push original (aguardada por quem abriu o scanner) no
+      // momento da troca de tela, antes do aluno responder, fazendo o
+      // recarregamento da lista acontecer cedo demais (ainda como pendente).
+      await Navigator.push(
         context,
         MaterialPageRoute(
           builder: (_) => ResponderFormularioPage(
-            sessaoId: rawValue,
+            sessaoToken: rawValue,
             formularioId: formularioId,
           ),
         ),
       );
+      if (mounted) Navigator.pop(context);
+    } on ApiException catch (e) {
+      _mostrarErro(e.status == 404
+          ? 'QR Code inválido ou sessão encerrada.'
+          : e.message);
     } catch (e) {
       if (mounted) _mostrarErro('Erro ao validar sessão. Tente novamente.');
     }

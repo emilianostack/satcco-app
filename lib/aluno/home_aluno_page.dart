@@ -2,9 +2,8 @@ import 'package:flutter/material.dart';
 import 'scanner_page.dart';
 import 'responder_formulario_page.dart';
 import '../services/auth_service.dart';
-import '../services/database/usuarios_db.dart';
-import '../services/database/turmas_db.dart';
-import '../services/database/respostas_db.dart';
+import '../services/api/alunos_api.dart';
+import '../services/route_observer.dart';
 
 class HomeAlunoPage extends StatefulWidget {
   const HomeAlunoPage({super.key});
@@ -13,112 +12,106 @@ class HomeAlunoPage extends StatefulWidget {
   State<HomeAlunoPage> createState() => _HomeAlunoPageState();
 }
 
-class _HomeAlunoPageState extends State<HomeAlunoPage> {
+class _HomeAlunoPageState extends State<HomeAlunoPage>
+    with SingleTickerProviderStateMixin, RouteAware {
   late Future<List<_TurmaInfo>> _futureTurmas;
-  String? _nomeAluno;
+  late final TabController _tabController;
+
+  /// Evita que um reload mais antigo, ainda em voo, sobrescreva com dados
+  /// desatualizados o resultado de uma ação mais recente — importante aqui
+  /// porque há mais de um gatilho de recarregamento (didPopNext + retorno
+  /// explícito do Navigator.push).
+  int _reqGen = 0;
 
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 2, vsync: this);
     _futureTurmas = _carregarTurmas();
   }
 
-  Future<List<_TurmaInfo>> _carregarTurmas() async {
-    final uid = AuthService.currentUser!.uid;
-    final userEmail = (AuthService.currentUser?.email ?? '').toLowerCase();
-
-    final usuarioDoc = await UsuariosDb.processarConvitesLogin(
-      uid: uid,
-      email: userEmail,
-    );
-
-    final userData = usuarioDoc.data() as Map<String, dynamic>?;
-
-    final nome = userData?['nome'] as String?;
-    if (mounted && nome != null) setState(() => _nomeAluno = nome);
-
-    final turmaIds = List<String>.from(userData?['turmas'] as List? ?? []);
-
-    if (turmaIds.isEmpty) return [];
-
-    final respostasSnap = await RespostasDb.getByAluno(uid);
-    final respondidoIds = <String>{};
-    final notasMap = <String, double?>{};
-    for (final doc in respostasSnap.docs) {
-      final data = doc.data() as Map<String, dynamic>;
-      final fId = data['formulario_id'] as String? ?? '';
-      if (fId.isNotEmpty) {
-        respondidoIds.add(fId);
-        notasMap[fId] = (data['nota'] as num?)?.toDouble();
-      }
-    }
-
-    final turmas = <_TurmaInfo>[];
-
-    await Future.wait(
-      turmaIds.map((turmaId) async {
-        final turmaDoc = await TurmasDb.getTurma(turmaId);
-        if (!turmaDoc.exists) return;
-
-        final turmaData = turmaDoc.data() as Map<String, dynamic>?;
-        final turmaNome = turmaData?['nome'] as String? ?? 'Turma';
-        final professorId = turmaData?['professor_id'] as String? ?? '';
-
-        if (userEmail.isNotEmpty) {
-          final alunoDoc = await TurmasDb.getAluno(turmaId, userEmail);
-          if (alunoDoc.exists &&
-              (alunoDoc.data() as Map<String, dynamic>?)?['ativo'] == false) {
-            return;
-          }
-        }
-
-        String nomeProfessor = '';
-        if (professorId.isNotEmpty) {
-          final profDoc = await UsuariosDb.getUsuario(professorId);
-          nomeProfessor =
-              (profDoc.data() as Map<String, dynamic>?)?['nome'] as String? ??
-                  '';
-        }
-
-        final formsSnap = await TurmasDb.getFormularios(turmaId);
-
-        final forms = formsSnap.docs.map((f) {
-          final data = f.data() as Map<String, dynamic>;
-          return _FormInfo(
-            id: f.id,
-            titulo: (data['titulo'] as String?) ?? 'Avaliação',
-            respondido: respondidoIds.contains(f.id),
-            nota: notasMap[f.id],
-          );
-        }).toList();
-
-        turmas.add(_TurmaInfo(
-          id: turmaId,
-          nome: turmaNome,
-          nomeProfessor: nomeProfessor,
-          forms: forms,
-        ));
-      }),
-    );
-
-    turmas.sort((a, b) => a.nome.compareTo(b.nome));
-    return turmas;
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    appRouteObserver.subscribe(this, ModalRoute.of(context) as PageRoute);
   }
 
-  void _atualizar() {
-    setState(() => _futureTurmas = _carregarTurmas());
+  /// Chamado sempre que a rota empilhada por cima desta é fechada (scanner
+  /// QR ou responder formulário direto) — reforça o recarregamento mesmo que
+  /// o encadeamento manual do Navigator não dispare corretamente.
+  @override
+  void didPopNext() => _atualizarAposResponder();
+
+  @override
+  void dispose() {
+    appRouteObserver.unsubscribe(this);
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  Future<List<_TurmaInfo>> _carregarTurmas() async {
+    final turmas = await AlunosApi.minhasTurmas();
+
+    final result = <_TurmaInfo>[];
+    for (final t in turmas) {
+      final turma = t['turma'] as Map<String, dynamic>;
+      if (turma['ativo'] == false) continue;
+
+      final professor = t['professor'] as Map<String, dynamic>;
+      final formularios =
+          ((t['formularios'] as List?) ?? []).cast<Map<String, dynamic>>();
+
+      result.add(_TurmaInfo(
+        id: turma['id'] as String,
+        nome: turma['nome'] as String? ?? 'Turma',
+        nomeProfessor: professor['nome'] as String? ?? '',
+        forms: formularios.map((f) {
+          return _FormInfo(
+            id: f['id'] as String,
+            titulo: f['titulo'] as String? ?? 'Avaliação',
+            respondido: f['respondido'] == true,
+            nota: f['nota'] != null ? (f['nota'] as num).toDouble() : null,
+          );
+        }).toList(),
+      ));
+    }
+
+    result.sort((a, b) => a.nome.compareTo(b.nome));
+    return result;
+  }
+
+  /// Busca a lista nova ANTES de trocar `_futureTurmas` — assim, se o reload
+  /// falhar (rede instável), a lista antiga continua na tela em vez de sumir
+  /// atrás de um erro.
+  Future<void> _atualizar() async {
+    final gen = ++_reqGen;
+    try {
+      final dados = await _carregarTurmas();
+      if (mounted && gen == _reqGen) {
+        setState(() {
+          _futureTurmas = Future.value(dados);
+        });
+      }
+    } catch (_) {
+      // mantém a lista atual; o usuário pode puxar para atualizar depois.
+    }
+  }
+
+  Future<void> _atualizarAposResponder() async {
+    await _atualizar();
+    if (mounted) _tabController.animateTo(1);
   }
 
   @override
   Widget build(BuildContext context) {
-    final raw = _nomeAluno ?? AuthService.currentUser?.email ?? 'Aluno';
+    final raw = AuthService.currentUser?.nome ??
+        AuthService.currentUser?.email ??
+        'Aluno';
     final displayName = raw.isEmpty
         ? raw
         : raw[0].toUpperCase() + raw.substring(1).toLowerCase();
 
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
+    return Scaffold(
         backgroundColor: const Color(0xFFF0F2F5),
         appBar: AppBar(
           title: const Text('SATCCO App'),
@@ -173,7 +166,7 @@ class _HomeAlunoPageState extends State<HomeAlunoPage> {
                         context,
                         MaterialPageRoute(
                             builder: (_) => const ScannerPage()),
-                      ).then((_) => _atualizar());
+                      ).then((_) => _atualizarAposResponder());
                     },
                     borderRadius: BorderRadius.circular(16),
                     child: Container(
@@ -209,7 +202,8 @@ class _HomeAlunoPageState extends State<HomeAlunoPage> {
 
             Container(
               color: Colors.white,
-              child: const TabBar(
+              child: TabBar(
+                controller: _tabController,
                 labelColor: Colors.green,
                 unselectedLabelColor: Colors.grey,
                 indicatorColor: Colors.green,
@@ -280,6 +274,7 @@ class _HomeAlunoPageState extends State<HomeAlunoPage> {
                   }
 
                   return TabBarView(
+                    controller: _tabController,
                     children: [
                       _buildTab(turmas, pendentes: true),
                       _buildTab(turmas, pendentes: false),
@@ -290,8 +285,7 @@ class _HomeAlunoPageState extends State<HomeAlunoPage> {
             ),
           ],
         ),
-      ),
-    );
+      );
   }
 
   Widget _buildTab(List<_TurmaInfo> turmas, {required bool pendentes}) {
@@ -384,7 +378,7 @@ class _HomeAlunoPageState extends State<HomeAlunoPage> {
                   builder: (_) =>
                       ResponderFormularioPage(formularioId: form.id),
                 ),
-              ).then((_) => _atualizar()),
+              ).then((_) => _atualizarAposResponder()),
       child: Container(
         margin: const EdgeInsets.only(bottom: 8),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),

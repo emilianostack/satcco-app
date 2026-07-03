@@ -1,12 +1,8 @@
-import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import '../services/api_client.dart';
 import '../widgets/custom_button.dart';
 import '../widgets/custom_textfield.dart';
 import '../services/auth_service.dart';
-import '../services/database/usuarios_db.dart';
-import '../services/database/codigos_db.dart';
-import '../services/email/email_service.dart';
 
 class CadastroPage extends StatefulWidget {
   const CadastroPage({super.key});
@@ -34,11 +30,6 @@ class _CadastroPageState extends State<CadastroPage> {
     super.dispose();
   }
 
-  String _gerarCodigo() {
-    final rand = Random.secure();
-    return (100000 + rand.nextInt(900000)).toString();
-  }
-
   Future<void> _cadastrar() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -50,53 +41,35 @@ class _CadastroPageState extends State<CadastroPage> {
     setState(() => _isLoading = true);
 
     final email = _emailController.text.trim().toLowerCase();
-    final codigo = _gerarCodigo();
 
     try {
-      await CodigosDb.salvar(email: email, codigo: codigo);
-      await EmailService.enviarCodigoVerificacao(
-          destinatario: email, codigo: codigo);
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isLoading = false);
-        _showError(
-            'Não foi possível enviar o e-mail de verificação. Verifique as configurações SMTP.');
-      }
+      await AuthService.solicitarCodigo(email);
+    } on ApiException catch (e) {
+      _showError(e.message);
+      setState(() => _isLoading = false);
       return;
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
+    } catch (e) {
+      _showError(
+          'Não foi possível enviar o e-mail de verificação. Verifique a conexão.');
+      setState(() => _isLoading = false);
+      return;
     }
+    if (mounted) setState(() => _isLoading = false);
 
     if (!mounted) return;
 
     final confirmado = await _mostrarDialogoVerificacao(email);
-    if (!confirmado) {
-      await CodigosDb.remover(email);
-      return;
-    }
+    if (!confirmado) return;
 
     setState(() => _isLoading = true);
     try {
-      final cred = await AuthService.createUser(
-        _emailController.text.trim(),
-        _senhaController.text.trim(),
-      );
-      final uid = cred.user!.uid;
-
-      await UsuariosDb.saveUsuario(
-        uid: uid,
+      await AuthService.createUser(
         nome: _nomeController.text.trim(),
         email: email,
+        senha: _senhaController.text.trim(),
         tipo: _tipo!,
       );
-
-      if (_tipo == 'aluno') {
-        await UsuariosDb.processarConvitesCadastro(uid: uid, email: email);
-      }
-
       await AuthService.signOut();
-
-      await CodigosDb.remover(email);
 
       if (!mounted) return;
       Navigator.pop(context);
@@ -108,14 +81,10 @@ class _CadastroPageState extends State<CadastroPage> {
           duration: Duration(seconds: 4),
         ),
       );
-    } on FirebaseAuthException catch (e) {
-      String msg = 'Erro ao criar conta.';
-      if (e.code == 'email-already-in-use') msg = 'E-mail já está em uso.';
-      if (e.code == 'weak-password') {
-        msg = 'Senha muito fraca (mínimo 6 caracteres).';
-      }
-      if (e.code == 'invalid-email') msg = 'E-mail inválido.';
-      _showError(msg);
+    } on ApiException catch (e) {
+      _showError(e.message);
+    } catch (e) {
+      _showError('Não foi possível conectar ao servidor.');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -328,10 +297,12 @@ class _VerificacaoDialogState extends State<_VerificacaoDialog> {
       _erro = null;
     });
 
-    final valido = await CodigosDb.verificar(
-      email: widget.email,
-      codigo: codigo,
-    );
+    bool valido;
+    try {
+      valido = await AuthService.verificarCodigo(widget.email, codigo);
+    } catch (e) {
+      valido = false;
+    }
 
     if (!mounted) return;
 

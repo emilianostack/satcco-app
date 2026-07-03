@@ -5,35 +5,15 @@ import 'minhas_avaliacoes_page.dart';
 import 'perguntas_page.dart';
 import 'turmas_page.dart';
 import '../services/auth_service.dart';
-import '../services/database/usuarios_db.dart';
 
-class HomePage extends StatefulWidget {
+class HomePage extends StatelessWidget {
   const HomePage({super.key});
 
   @override
-  State<HomePage> createState() => _HomePageState();
-}
-
-class _HomePageState extends State<HomePage> {
-  String? _nomeProfessor;
-
-  @override
-  void initState() {
-    super.initState();
-    _carregarNome();
-  }
-
-  Future<void> _carregarNome() async {
-    final uid = AuthService.currentUser?.uid;
-    if (uid == null) return;
-    final doc = await UsuariosDb.getUsuario(uid);
-    final nome = (doc.data() as Map<String, dynamic>?)?['nome'] as String?;
-    if (mounted && nome != null) setState(() => _nomeProfessor = nome);
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final raw = _nomeProfessor ?? AuthService.currentUser?.email ?? 'Usuário';
+    final raw = AuthService.currentUser?.nome ??
+        AuthService.currentUser?.email ??
+        'Usuário';
     final displayName = raw.isEmpty
         ? raw
         : raw[0].toUpperCase() + raw.substring(1).toLowerCase();

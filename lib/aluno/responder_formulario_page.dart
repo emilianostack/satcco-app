@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
-import '../services/auth_service.dart';
-import '../services/database/formularios_db.dart';
-import '../services/database/respostas_db.dart';
-import '../services/database/usuarios_db.dart';
+import '../services/api_client.dart';
+import '../services/api/formularios_api.dart';
+import '../services/api/respostas_api.dart';
+import '../services/api/sessoes_api.dart';
 
 class ResponderFormularioPage extends StatefulWidget {
-  /// ID da sessão QR. Nulo quando acedido diretamente pelo card.
-  final String? sessaoId;
+  /// Token da sessão QR. Nulo quando acedido diretamente pelo card
+  /// (ex.: "Minhas Avaliações" do professor convidado).
+  final String? sessaoToken;
   final String formularioId;
 
   /// Quando true, as respostas não são gravadas (modo de pré-visualização).
@@ -17,7 +18,7 @@ class ResponderFormularioPage extends StatefulWidget {
 
   const ResponderFormularioPage({
     super.key,
-    this.sessaoId,
+    this.sessaoToken,
     required this.formularioId,
     this.modoTeste = false,
     this.isProfessor = false,
@@ -36,9 +37,7 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
   bool _jaRespondeu = false;
   bool _enviando = false;
   double? _nota;
-
-  String get _alunoId => AuthService.currentUser!.uid;
-  String get _docRespostaId => '${widget.formularioId}_$_alunoId';
+  String? _erro;
 
   @override
   void initState() {
@@ -47,49 +46,73 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
   }
 
   Future<void> _carregarDados() async {
-    if (!widget.modoTeste) {
-      final respostaDoc = await RespostasDb.getRespostaById(_docRespostaId);
-      if (respostaDoc.exists) {
-        final nota = ((respostaDoc.data() as Map<String, dynamic>?)?['nota'] as num?)
-            ?.toDouble();
-        if (mounted) {
-          setState(() { _jaRespondeu = true; _nota = nota; _loading = false; });
+    try {
+      if (!widget.modoTeste) {
+        final resposta = await RespostasApi.minhaPorFormulario(widget.formularioId);
+        if (resposta != null) {
+          final nota =
+              resposta['nota'] != null ? double.tryParse(resposta['nota'].toString()) : null;
+          if (mounted) {
+            setState(() { _jaRespondeu = true; _nota = nota; _loading = false; });
+          }
+          return;
         }
-        return;
       }
-    }
 
-    final formDoc = await FormulariosDb.getFormulario(widget.formularioId);
-    _tituloFormulario =
-        (formDoc.data() as Map<String, dynamic>?)?['titulo'] as String? ??
-            'Avaliação';
-
-    final perguntas = await FormulariosDb.getPerguntas(widget.formularioId);
-
-    for (final p in perguntas) {
-      final id = p['pergunta_id'] as String;
-      final tipo = p['tipo'] as String;
-      switch (tipo) {
-        case 'escala':
-          _respostas[id] = 5.0;
-          break;
-        case 'sim_nao':
-        case 'verdadeiro_falso':
-        case 'multipla_escolha':
-        case 'texto':
-          _respostas[id] = null;
-          break;
+      Map<String, dynamic> formulario;
+      if (widget.sessaoToken != null) {
+        // Fluxo QR: usa a mesma consulta pública já validada pelo scanner —
+        // funciona mesmo sem o usuário ser o dono do formulário.
+        final resultado = await SessoesApi.consultarPorToken(widget.sessaoToken!);
+        formulario = Map<String, dynamic>.from(resultado['formulario'] as Map);
+        formulario['perguntas'] = resultado['perguntas'];
+      } else {
+        // Fluxo direto (lista do aluno / "Minhas Avaliações" / testar): endpoint
+        // liberado para quem tem acesso, não só o professor dono.
+        formulario = await FormulariosApi.getFormularioParaResponder(widget.formularioId);
       }
-    }
 
-    if (mounted) {
-      setState(() {
-        _perguntas = perguntas;
-        _loading = false;
-      });
+      _tituloFormulario = formulario['titulo'] as String? ?? 'Avaliação';
+
+      final perguntas =
+          ((formulario['perguntas'] as List?) ?? []).cast<Map<String, dynamic>>();
+
+      for (final p in perguntas) {
+        final id = p['pergunta_id'] as String;
+        final tipo = p['tipo'] as String;
+        switch (tipo) {
+          case 'escala':
+            _respostas[id] = 5.0;
+            break;
+          case 'sim_nao':
+          case 'verdadeiro_falso':
+          case 'multipla_escolha':
+          case 'texto':
+            _respostas[id] = null;
+            break;
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _perguntas = perguntas;
+          _loading = false;
+        });
+      }
+    } on ApiException catch (e) {
+      if (mounted) setState(() { _erro = e.message; _loading = false; });
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _erro = 'Não foi possível carregar o formulário. Verifique a conexão.';
+          _loading = false;
+        });
+      }
     }
   }
 
+  /// Usada apenas no modo teste (pré-visualização, nunca persistida) — a nota
+  /// de uma submissão real vem sempre calculada pelo backend.
   /// Calcula a nota automática (0–10) com base nos pesos e respostas corretas.
   /// Perguntas do tipo 'texto' e questões sem resposta correta definida não entram no cálculo.
   /// Retorna null quando nenhuma pergunta gera nota (sem avaliação automática).
@@ -100,22 +123,20 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
     for (final p in _perguntas) {
       final id = p['pergunta_id'] as String;
       final tipo = p['tipo'] as String;
-      final peso = (p['peso'] as num?)?.toDouble() ?? 1.0;
+      final peso = double.tryParse(p['peso']?.toString() ?? '1') ?? 1.0;
       final valor = _respostas[id];
 
-      // Se a questão tem peso zero, ela é totalmente ignorada no cálculo
       if (peso <= 0) continue;
 
       switch (tipo) {
         case 'escala':
           earned += ((valor as double? ?? 0.0) / 10.0) * peso;
           maxPossible += peso;
-          break; // Inclusão dos breaks para evitar vazamento de blocos
+          break;
 
         case 'sim_nao':
         case 'verdadeiro_falso':
           final correta = p['resposta_correta'] as String?;
-          // Trata a "opção de não ter resposta certa" ignorando strings vazias
           if (correta != null && correta.trim().isNotEmpty) {
             if (valor == correta) earned += peso;
             maxPossible += peso;
@@ -124,7 +145,6 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
 
         case 'multipla_escolha':
           final correta = p['opcao_correta'];
-          // Trata a "opção de não ter resposta certa" ignorando valores -1
           if (correta != null && correta != -1) {
             if (valor == correta) earned += peso;
             maxPossible += peso;
@@ -156,49 +176,41 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
 
     setState(() => _enviando = true);
 
-    try {
+    if (widget.modoTeste) {
       final nota = _calcularNota();
-
-      if (widget.modoTeste) {
-        if (mounted) {
-          setState(() { _jaRespondeu = true; _enviando = false; _nota = nota; });
-        }
-        return;
+      if (mounted) {
+        setState(() { _jaRespondeu = true; _enviando = false; _nota = nota; });
       }
+      return;
+    }
 
-      final user = AuthService.currentUser!;
-
-      final userDoc = await UsuariosDb.getUsuario(user.uid);
-      final nomeAluno =
-          (userDoc.data() as Map<String, dynamic>?)?['nome'] as String? ??
-              user.email ??
-              'Aluno';
-
+    try {
       final listaRespostas = _perguntas.map((p) {
         final id = p['pergunta_id'] as String;
-        return {
-          'pergunta_id': id,
-          'titulo': p['titulo'],
-          'tipo': p['tipo'],
-          'peso': p['peso'] ?? 1,
-          'valor': _respostas[id],
-        };
+        return {'perguntaId': id, 'valor': _respostas[id].toString()};
       }).toList();
 
-      await RespostasDb.submit(
-        docId: _docRespostaId,
-        sessaoId: widget.sessaoId,
-        formularioId: widget.formularioId,
-        alunoId: _alunoId,
-        alunoNome: nomeAluno,
-        alunoEmail: user.email,
+      final resposta = await RespostasApi.submit(
+        sessaoToken: widget.sessaoToken,
+        formularioId: widget.sessaoToken == null ? widget.formularioId : null,
         respostas: listaRespostas,
-        nota: nota,
-        isProfessor: widget.isProfessor,
       );
+
+      final nota =
+          resposta['nota'] != null ? double.tryParse(resposta['nota'].toString()) : null;
 
       if (mounted) {
         setState(() { _jaRespondeu = true; _enviando = false; _nota = nota; });
+      }
+    } on ApiException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(e.status == 409 ? 'Você já respondeu este formulário.' : e.message),
+            backgroundColor: Colors.red,
+          ),
+        );
+        setState(() => _enviando = false);
       }
     } catch (e) {
       if (mounted) {
@@ -218,6 +230,44 @@ class _ResponderFormularioPageState extends State<ResponderFormularioPage> {
     if (_loading) {
       return const Scaffold(
         body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (_erro != null) {
+      return Scaffold(
+        appBar: AppBar(
+          backgroundColor: Colors.red,
+          foregroundColor: Colors.white,
+          elevation: 0,
+        ),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline, color: Colors.red, size: 64),
+                const SizedBox(height: 16),
+                Text(
+                  _erro!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.black87, fontSize: 15),
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton(
+                  onPressed: () {
+                    setState(() {
+                      _erro = null;
+                      _loading = true;
+                    });
+                    _carregarDados();
+                  },
+                  child: const Text('Tentar novamente'),
+                ),
+              ],
+            ),
+          ),
+        ),
       );
     }
 

@@ -1,10 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import '../widgets/question_type_icon.dart';
-import '../services/auth_service.dart';
-import '../services/database/formularios_db.dart';
-import '../services/database/perguntas_db.dart';
-import '../services/database/turmas_db.dart';
+import '../services/api_client.dart';
+import '../services/api/formularios_api.dart';
+import '../services/api/perguntas_api.dart';
 
 class CriarFormularioPage extends StatefulWidget {
   final String? formularioId;
@@ -20,7 +18,7 @@ class _CriarFormularioPageState extends State<CriarFormularioPage> {
   final _formKey = GlobalKey<FormState>();
   final _tituloController = TextEditingController();
 
-  List<DocumentSnapshot> _perguntas = [];
+  List<Map<String, dynamic>> _perguntas = [];
   final Map<String, bool> _selecionadas = {};
   final Map<String, TextEditingController> _pesos = {};
 
@@ -48,37 +46,38 @@ class _CriarFormularioPageState extends State<CriarFormularioPage> {
   }
 
   Future<void> _carregarDados() async {
-    final uid = AuthService.currentUser!.uid;
+    final perguntas = await PerguntasApi.listar();
 
-    final perguntas = await PerguntasDb.getByProfessor(uid);
-
-    for (final doc in perguntas) {
-      _selecionadas[doc.id] = false;
-      _pesos[doc.id] = TextEditingController(text: '1');
+    for (final p in perguntas) {
+      final id = p['id'] as String;
+      _selecionadas[id] = false;
+      _pesos[id] = TextEditingController(text: '1');
     }
 
     if (_editando) {
-      final existentes = await FormulariosDb.getPerguntasSnap(
-        widget.formularioId!,
-      );
+      final detalhe = await FormulariosApi.getFormulario(widget.formularioId!);
+      final existentes =
+          ((detalhe['perguntas'] as List?) ?? []).cast<Map<String, dynamic>>();
 
       final Map<String, int> ordemSalva = {};
 
-      for (final doc in existentes.docs) {
-        final data = doc.data() as Map<String, dynamic>;
-        final pid = data['pergunta_id'] as String? ?? doc.id;
+      for (final assoc in existentes) {
+        final pid = assoc['pergunta_id'] as String;
         if (_selecionadas.containsKey(pid)) {
           _selecionadas[pid] = true;
-          _pesos[pid]?.text = (data['peso'] ?? 1).toString();
-          ordemSalva[pid] = (data['ordem'] as int?) ?? 999;
+          final peso = double.tryParse(assoc['peso'].toString())?.round() ?? 1;
+          _pesos[pid]?.text = peso.toString();
+          ordemSalva[pid] = (assoc['ordem'] as int?) ?? 999;
         }
       }
 
       perguntas.sort((a, b) {
-        final aSelec = _selecionadas[a.id] ?? false;
-        final bSelec = _selecionadas[b.id] ?? false;
+        final aId = a['id'] as String;
+        final bId = b['id'] as String;
+        final aSelec = _selecionadas[aId] ?? false;
+        final bSelec = _selecionadas[bId] ?? false;
         if (aSelec && bSelec) {
-          return (ordemSalva[a.id] ?? 999).compareTo(ordemSalva[b.id] ?? 999);
+          return (ordemSalva[aId] ?? 999).compareTo(ordemSalva[bId] ?? 999);
         }
         if (aSelec) return -1;
         if (bSelec) return 1;
@@ -86,6 +85,7 @@ class _CriarFormularioPageState extends State<CriarFormularioPage> {
       });
     }
 
+    if (!mounted) return;
     setState(() {
       _perguntas = perguntas;
       _loading = false;
@@ -95,9 +95,8 @@ class _CriarFormularioPageState extends State<CriarFormularioPage> {
   Future<void> _salvar() async {
     if (!_formKey.currentState!.validate()) return;
 
-    final selecionadas = _perguntas
-        .where((doc) => _selecionadas[doc.id] == true)
-        .toList();
+    final selecionadas =
+        _perguntas.where((p) => _selecionadas[p['id']] == true).toList();
 
     if (selecionadas.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -112,62 +111,42 @@ class _CriarFormularioPageState extends State<CriarFormularioPage> {
     setState(() => _saving = true);
 
     try {
-      final uid = AuthService.currentUser!.uid;
-
-      final jaExiste = await FormulariosDb.tituloJaExiste(
-        professorId: uid,
-        titulo: _tituloController.text.trim(),
-        excludeId: widget.formularioId,
-      );
-      if (jaExiste) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Já existe um formulário com este título.'),
-              backgroundColor: Colors.orange,
-            ),
-          );
-          setState(() => _saving = false);
-        }
-        return;
-      }
-
-      final perguntasMaps = selecionadas.map((doc) {
-        final data = doc.data() as Map<String, dynamic>;
-        final peso = int.tryParse(_pesos[doc.id]?.text.trim() ?? '1') ?? 1;
-        final tipo = data['tipo'] ?? 'escala';
-        return {
-          'pergunta_id': doc.id,
-          'titulo': data['titulo'] ?? '',
-          'tipo': tipo,
-          'peso': peso < 0 ? 0 : peso,
-          if (tipo == 'multipla_escolha' && data['opcoes'] != null)
-            'opcoes': data['opcoes'],
-          if (tipo == 'multipla_escolha' && data['opcao_correta'] != null)
-            'opcao_correta': data['opcao_correta'],
-          if (data['resposta_correta'] != null)
-            'resposta_correta': data['resposta_correta'],
-        };
-      }).toList();
-
       final novoTitulo = _tituloController.text.trim();
 
-      await FormulariosDb.salvar(
-        formularioId: widget.formularioId,
-        titulo: novoTitulo,
-        professorId: uid,
-        perguntas: perguntasMaps,
-      );
-
-      if (_editando) {
-        await TurmasDb.atualizarTituloFormulario(
-          formularioId: widget.formularioId!,
-          novoTitulo: novoTitulo,
-          professorId: uid,
-        );
+      final perguntasBody = <Map<String, dynamic>>[];
+      for (var i = 0; i < selecionadas.length; i++) {
+        final id = selecionadas[i]['id'] as String;
+        final peso = int.tryParse(_pesos[id]?.text.trim() ?? '1') ?? 1;
+        perguntasBody.add({
+          'pergunta_id': id,
+          'peso': peso < 0 ? 0 : peso,
+          'ordem': i,
+        });
       }
 
+      String formularioId;
+      if (_editando) {
+        await FormulariosApi.update(widget.formularioId!, novoTitulo);
+        formularioId = widget.formularioId!;
+      } else {
+        final criado = await FormulariosApi.create(novoTitulo);
+        formularioId = criado['id'] as String;
+      }
+
+      await FormulariosApi.salvarPerguntas(formularioId, perguntasBody);
+
       if (mounted) Navigator.pop(context);
+    } on ApiException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              e.status == 409 ? 'Já existe um formulário com este título.' : e.message,
+            ),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -320,15 +299,15 @@ class _CriarFormularioPageState extends State<CriarFormularioPage> {
                         },
                         itemBuilder: (context, index) {
                           final doc = _perguntas[index];
-                          final data = doc.data() as Map<String, dynamic>;
-                          final titulo = data['titulo'] ?? '';
-                          final tipo = data['tipo'] ?? 'escala';
-                          final selecionada = _selecionadas[doc.id] ?? false;
+                          final id = doc['id'] as String;
+                          final titulo = doc['titulo'] ?? '';
+                          final tipo = doc['tipo'] ?? 'escala';
+                          final selecionada = _selecionadas[id] ?? false;
 
                           return _buildPerguntaItem(
-                            key: ValueKey(doc.id),
+                            key: ValueKey(id),
                             index: index,
-                            doc: doc,
+                            id: id,
                             titulo: titulo,
                             tipo: tipo,
                             selecionada: selecionada,
@@ -347,7 +326,7 @@ class _CriarFormularioPageState extends State<CriarFormularioPage> {
   Widget _buildPerguntaItem({
     required Key key,
     required int index,
-    required DocumentSnapshot doc,
+    required String id,
     required String titulo,
     required String tipo,
     required bool selecionada,
@@ -395,7 +374,7 @@ class _CriarFormularioPageState extends State<CriarFormularioPage> {
                   activeColor: Colors.blueAccent,
                   onChanged: (val) {
                     setState(() {
-                      _selecionadas[doc.id] = val ?? false;
+                      _selecionadas[id] = val ?? false;
                     });
                   },
                 ),
@@ -441,7 +420,7 @@ class _CriarFormularioPageState extends State<CriarFormularioPage> {
                     SizedBox(
                       width: 80,
                       child: TextFormField(
-                        controller: _pesos[doc.id],
+                        controller: _pesos[id],
                         keyboardType: TextInputType.number,
                         textAlign: TextAlign.center,
                         decoration: InputDecoration(

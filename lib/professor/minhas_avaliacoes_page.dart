@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import '../aluno/responder_formulario_page.dart';
 import '../widgets/empty_state.dart';
-import '../services/auth_service.dart';
-import '../services/database/turmas_db.dart';
-import '../services/database/respostas_db.dart';
+import '../services/api/turmas_api.dart';
+import '../services/api/respostas_api.dart';
+import '../services/route_observer.dart';
 
 class MinhasAvaliacoesPage extends StatefulWidget {
   const MinhasAvaliacoesPage({super.key});
@@ -13,11 +13,13 @@ class MinhasAvaliacoesPage extends StatefulWidget {
 }
 
 class _MinhasAvaliacoesPageState extends State<MinhasAvaliacoesPage>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, RouteAware {
   late TabController _tabController;
   late Future<List<_FormItem>> _future;
 
-  String get _professorId => AuthService.currentUser!.uid;
+  /// Evita que um reload mais antigo, ainda em voo, sobrescreva com dados
+  /// desatualizados o resultado de uma ação mais recente.
+  int _reqGen = 0;
 
   @override
   void initState() {
@@ -27,39 +29,66 @@ class _MinhasAvaliacoesPageState extends State<MinhasAvaliacoesPage>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    appRouteObserver.subscribe(this, ModalRoute.of(context) as PageRoute);
+  }
+
+  @override
+  void didPopNext() => _atualizarAposResponder();
+
+  @override
   void dispose() {
+    appRouteObserver.unsubscribe(this);
     _tabController.dispose();
     super.dispose();
   }
 
   Future<List<_FormItem>> _carregar() async {
-    final turmasDocs = await TurmasDb.getTurmasConvidado(_professorId);
-    if (turmasDocs.isEmpty) return [];
+    final turmas = await TurmasApi.listarConvidado();
+    if (turmas.isEmpty) return [];
 
     final items = <_FormItem>[];
-    for (final turmaDoc in turmasDocs) {
-      final turmaData = turmaDoc.data() as Map<String, dynamic>;
-      final turmaNome = (turmaData['nome'] as String?) ?? 'Turma';
+    for (final turma in turmas) {
+      final turmaNome = turma['nome'] as String? ?? 'Turma';
 
-      final formulariosSnap = await TurmasDb.getFormularios(turmaDoc.id);
-      for (final formDoc in formulariosSnap.docs) {
-        final data = formDoc.data() as Map<String, dynamic>;
-        final titulo = (data['titulo'] as String?) ?? 'Sem título';
-        final formularioId = formDoc.id;
-        final jaRespondeu =
-            await RespostasDb.jaRespondeuPorId('${formularioId}_$_professorId');
+      final formularios = await TurmasApi.listarFormularios(turma['id'] as String);
+      for (final f in formularios) {
+        final formularioId = f['id'] as String;
+        final titulo = f['titulo'] as String? ?? 'Sem título';
+        final resposta = await RespostasApi.minhaPorFormulario(formularioId);
         items.add(_FormItem(
           id: formularioId,
           titulo: titulo,
           turmaNome: turmaNome,
-          jaRespondeu: jaRespondeu,
+          jaRespondeu: resposta != null,
         ));
       }
     }
     return items;
   }
 
-  void _atualizar() => setState(() => _future = _carregar());
+  /// Busca a lista nova ANTES de trocar `_future` — assim, se o reload falhar
+  /// (rede instável), a lista antiga continua na tela em vez de sumir atrás
+  /// de um erro.
+  Future<void> _atualizar() async {
+    final gen = ++_reqGen;
+    try {
+      final dados = await _carregar();
+      if (mounted && gen == _reqGen) {
+        setState(() {
+          _future = Future.value(dados);
+        });
+      }
+    } catch (_) {
+      // mantém a lista atual; o usuário pode puxar para atualizar depois.
+    }
+  }
+
+  Future<void> _atualizarAposResponder() async {
+    await _atualizar();
+    if (mounted) _tabController.animateTo(1);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -226,7 +255,7 @@ class _MinhasAvaliacoesPageState extends State<MinhasAvaliacoesPage>
                           ),
                         ),
                       );
-                      _atualizar();
+                      _atualizarAposResponder();
                     },
                     child: const Text('Responder'),
                   ),

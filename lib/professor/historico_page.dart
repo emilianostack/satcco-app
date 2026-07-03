@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
-import '../services/auth_service.dart';
-import '../services/database/formularios_db.dart';
-import '../services/database/respostas_db.dart';
+import '../services/api/formularios_api.dart';
 
 class HistoricoPage extends StatefulWidget {
   const HistoricoPage({super.key});
@@ -19,55 +17,43 @@ class _HistoricoPageState extends State<HistoricoPage> {
     _future = _carregar();
   }
 
+  Future<void> _recarregar() async {
+    final dados = await _carregar();
+    if (mounted) {
+      setState(() {
+        _future = Future.value(dados);
+      });
+    }
+  }
+
   Future<List<_FormularioGroup>> _carregar() async {
-    final uid = AuthService.currentUser!.uid;
+    final formularios = await FormulariosApi.listar();
+    if (formularios.isEmpty) return [];
 
-    final formDocs = await FormulariosDb.getByProfessor(uid);
-    if (formDocs.isEmpty) return [];
+    final grupos = await Future.wait(formularios.map((f) async {
+      final id = f['id'] as String;
+      final titulo = f['titulo'] as String? ?? 'Sem título';
+      final respostas = await FormulariosApi.listarRespostas(id);
 
-    final formMap = <String, String>{};
-    for (final d in formDocs) {
-      formMap[d.id] =
-          (d.data() as Map<String, dynamic>)['titulo'] as String? ??
-              'Sem título';
-    }
+      final logs = respostas.map((r) {
+        return _RespostaLog(
+          alunoNome: (r['aluno_nome'] as String?) ??
+              (r['aluno_email'] as String?) ??
+              'Aluno',
+          alunoEmail: r['aluno_email'] as String?,
+          nota: r['nota'] != null ? double.tryParse(r['nota'].toString()) : null,
+          respondidoEm: r['respondido_em'] != null
+              ? DateTime.parse(r['respondido_em'] as String)
+              : null,
+        );
+      }).toList()
+        ..sort((a, b) => a.alunoNome.compareTo(b.alunoNome));
 
-    final respostaDocs =
-        await RespostasDb.getByFormularioIds(formMap.keys.toList());
+      return _FormularioGroup(id: id, titulo: titulo, respostas: logs);
+    }));
 
-    final groups = <String, List<_RespostaLog>>{};
-    for (final formId in formMap.keys) {
-      groups[formId] = [];
-    }
-
-    for (final d in respostaDocs) {
-      final data = d.data() as Map<String, dynamic>;
-      final formId = data['formulario_id'] as String? ?? '';
-      if (!groups.containsKey(formId)) continue;
-
-      groups[formId]!.add(_RespostaLog(
-        alunoNome: (data['aluno_nome'] as String?) ??
-            (data['aluno_email'] as String?) ??
-            'Aluno',
-        alunoEmail: data['aluno_email'] as String?,
-        nota: (data['nota'] as num?)?.toDouble(),
-        respondidoEm:
-            (data['respondido_em'] as dynamic)?.toDate() as DateTime?,
-      ));
-    }
-
-    final result = formMap.entries.map((e) {
-      final respostas = groups[e.key] ?? [];
-      respostas.sort((a, b) => a.alunoNome.compareTo(b.alunoNome));
-      return _FormularioGroup(
-        id: e.key,
-        titulo: e.value,
-        respostas: respostas,
-      );
-    }).toList();
-
-    result.sort((a, b) => a.titulo.compareTo(b.titulo));
-    return result;
+    grupos.sort((a, b) => a.titulo.compareTo(b.titulo));
+    return grupos;
   }
 
   String _formatarData(DateTime dt) {
@@ -90,7 +76,7 @@ class _HistoricoPageState extends State<HistoricoPage> {
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Atualizar',
-            onPressed: () => setState(() => _future = _carregar()),
+            onPressed: _recarregar,
           ),
         ],
       ),
@@ -133,7 +119,7 @@ class _HistoricoPageState extends State<HistoricoPage> {
           }
 
           return RefreshIndicator(
-            onRefresh: () async => setState(() => _future = _carregar()),
+            onRefresh: _recarregar,
             child: ListView.builder(
               padding: const EdgeInsets.all(16),
               itemCount: groups.length,

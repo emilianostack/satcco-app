@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
-import '../services/database/sessoes_db.dart';
+import '../services/api/sessoes_api.dart';
 
 class QrCodePage extends StatefulWidget {
   final String formularioId;
@@ -20,6 +20,7 @@ class QrCodePage extends StatefulWidget {
 
 class _QrCodePageState extends State<QrCodePage> {
   String? _sessaoId;
+  String? _sessaoToken;
   String _status = 'ativa';
   bool _loading = true;
   bool _encerrando = false;
@@ -36,14 +37,15 @@ class _QrCodePageState extends State<QrCodePage> {
       _status = 'ativa';
     });
 
-    final id = await SessoesDb.criar(
+    final sessao = await SessoesApi.criar(
       formularioId: widget.formularioId,
       turmaId: widget.turmaId,
     );
 
     if (mounted) {
       setState(() {
-        _sessaoId = id;
+        _sessaoId = sessao['id'] as String;
+        _sessaoToken = sessao['token'] as String;
         _loading = false;
       });
     }
@@ -53,7 +55,7 @@ class _QrCodePageState extends State<QrCodePage> {
     if (_sessaoId == null) return;
     setState(() => _encerrando = true);
 
-    await SessoesDb.encerrar(_sessaoId!);
+    await SessoesApi.encerrar(_sessaoId!);
 
     if (mounted) {
       setState(() {
@@ -128,7 +130,7 @@ class _QrCodePageState extends State<QrCodePage> {
 
                         if (_status == 'ativa')
                           QrImageView(
-                            data: _sessaoId!,
+                            data: _sessaoToken!,
                             version: QrVersions.auto,
                             size: 240,
                             backgroundColor: Colors.white,
@@ -140,7 +142,7 @@ class _QrCodePageState extends State<QrCodePage> {
                               Opacity(
                                 opacity: 0.2,
                                 child: QrImageView(
-                                  data: _sessaoId!,
+                                  data: _sessaoToken!,
                                   version: QrVersions.auto,
                                   size: 240,
                                   backgroundColor: Colors.white,

@@ -1,14 +1,75 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'turma_detail_page.dart';
 import '../widgets/empty_state.dart';
-import '../services/auth_service.dart';
-import '../services/database/turmas_db.dart';
+import '../services/api_client.dart';
+import '../services/api/turmas_api.dart';
+import '../services/api/formularios_api.dart';
+import '../services/route_observer.dart';
 
-class TurmasPage extends StatelessWidget {
+class TurmasPage extends StatefulWidget {
   const TurmasPage({super.key});
 
-  String get _professorId => AuthService.currentUser!.uid;
+  @override
+  State<TurmasPage> createState() => _TurmasPageState();
+}
+
+class _TurmasPageState extends State<TurmasPage> with RouteAware {
+  late Future<List<Map<String, dynamic>>> _future;
+
+  /// Incrementado a cada ação que deveria atualizar `_future` — evita que um
+  /// GET mais antigo, ainda em voo, sobrescreva com dados desatualizados o
+  /// resultado de uma ação mais recente (ex.: criar/remover).
+  int _reqGen = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = TurmasApi.listar();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    appRouteObserver.subscribe(this, ModalRoute.of(context) as PageRoute);
+  }
+
+  @override
+  void dispose() {
+    appRouteObserver.unsubscribe(this);
+    super.dispose();
+  }
+
+  /// Chamado sempre que a rota empilhada por cima desta é fechada (ex.: o
+  /// bottom sheet de nova turma, ou voltar de TurmaDetailPage) — reforça o
+  /// recarregamento mesmo que o fluxo específico não dispare corretamente.
+  @override
+  void didPopNext() => _recarregar();
+
+  /// Busca a lista nova ANTES de trocar `_future` — assim, se o reload falhar
+  /// (rede instável), a lista antiga continua na tela em vez de sumir atrás
+  /// de um erro.
+  Future<void> _recarregar() async {
+    final gen = ++_reqGen;
+    try {
+      final dados = await TurmasApi.listar();
+      if (mounted && gen == _reqGen) {
+        setState(() {
+          _future = Future.value(dados);
+        });
+      }
+    } catch (_) {
+      // mantém a lista atual; o usuário pode puxar para atualizar depois.
+    }
+  }
+
+  Future<bool> _turmaHasRespostas(String turmaId) async {
+    final formularios = await TurmasApi.listarFormularios(turmaId);
+    for (final f in formularios) {
+      final respostas = await FormulariosApi.listarRespostas(f['id'] as String);
+      if (respostas.isNotEmpty) return true;
+    }
+    return false;
+  }
 
   Future<void> _mostrarDialogCriar(BuildContext context) async {
     final controller = TextEditingController();
@@ -21,18 +82,20 @@ class TurmasPage extends StatelessWidget {
         titulo: 'Nova Turma',
         labelBotao: 'Criar Turma',
         onSalvar: (nome) async {
-          if (await TurmasDb.nomeJaExiste(_professorId, nome)) {
-            return 'Já existe uma turma com este nome.';
+          try {
+            await TurmasApi.create(nome);
+            return null;
+          } on ApiException catch (e) {
+            return e.status == 409 ? 'Já existe uma turma com este nome.' : e.message;
           }
-          await TurmasDb.create(nome: nome, professorId: _professorId);
-          return null;
         },
       ),
     );
+    _recarregar();
   }
 
   Future<void> _mostrarDialogRenomear(
-      BuildContext context, String docId, String nomeAtual) async {
+      BuildContext context, String turmaId, String nomeAtual) async {
     final controller = TextEditingController(text: nomeAtual);
     await showModalBottomSheet(
       context: context,
@@ -44,20 +107,21 @@ class TurmasPage extends StatelessWidget {
         labelBotao: 'Salvar',
         onSalvar: (nome) async {
           if (nome == nomeAtual) return null;
-          if (await TurmasDb.nomeJaExiste(_professorId, nome,
-              excludeDocId: docId)) {
-            return 'Já existe uma turma com este nome.';
+          try {
+            await TurmasApi.rename(turmaId, nome);
+            return null;
+          } on ApiException catch (e) {
+            return e.status == 409 ? 'Já existe uma turma com este nome.' : e.message;
           }
-          await TurmasDb.rename(docId, nome);
-          return null;
         },
       ),
     );
+    _recarregar();
   }
 
   Future<void> _confirmarDelete(
       BuildContext context, String turmaId, String nome) async {
-    if (await TurmasDb.hasRespostas(turmaId)) {
+    if (await _turmaHasRespostas(turmaId)) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -93,7 +157,20 @@ class TurmasPage extends StatelessWidget {
       ),
     );
 
-    if (ok == true) await TurmasDb.delete(turmaId);
+    if (ok == true) {
+      await TurmasApi.delete(turmaId);
+      // Remove da lista já em memória imediatamente, sem esperar um novo GET.
+      // Bump do gen ANTES de ler `_future` invalida qualquer reload mais
+      // antigo ainda em voo.
+      final gen = ++_reqGen;
+      final atual = await _future;
+      if (mounted && gen == _reqGen) {
+        setState(() {
+          _future = Future.value(atual.where((t) => t['id'] != turmaId).toList());
+        });
+      }
+      _recarregar();
+    }
   }
 
   @override
@@ -107,100 +184,111 @@ class TurmasPage extends StatelessWidget {
         foregroundColor: Colors.white,
         elevation: 0,
       ),
-      body: StreamBuilder<QuerySnapshot>(
-        stream: TurmasDb.watchByProfessor(_professorId),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasError) {
-            return Center(child: Text('Erro: ${snapshot.error}'));
-          }
+      body: RefreshIndicator(
+        onRefresh: () async => _recarregar(),
+        child: FutureBuilder<List<Map<String, dynamic>>>(
+          future: _future,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (snapshot.hasError) {
+              return Center(child: Text('Erro: ${snapshot.error}'));
+            }
 
-          final docs = snapshot.data?.docs ?? [];
+            final turmas = snapshot.data ?? [];
 
-          if (docs.isEmpty) {
-            return const EmptyState(
-              icon: Icons.group_outlined,
-              title: 'Nenhuma turma criada.',
-              subtitle: 'Toque em + para criar a primeira turma.',
-            );
-          }
-
-          return ListView.builder(
-            padding: const EdgeInsets.all(16),
-            itemCount: docs.length,
-            itemBuilder: (context, index) {
-              final doc = docs[index];
-              final data = doc.data() as Map<String, dynamic>;
-              final nome = (data['nome'] as String?) ?? 'Turma';
-
-              return Container(
-                margin: const EdgeInsets.only(bottom: 10),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(14),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.05),
-                      blurRadius: 8,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
-                ),
-                child: ListTile(
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  leading: const CircleAvatar(
-                    backgroundColor: Color(0xFFE8F5E9),
-                    child: Icon(Icons.group, color: Colors.green),
+            if (turmas.isEmpty) {
+              return ListView(
+                children: const [
+                  SizedBox(height: 120),
+                  EmptyState(
+                    icon: Icons.group_outlined,
+                    title: 'Nenhuma turma criada.',
+                    subtitle: 'Toque em + para criar a primeira turma.',
                   ),
-                  title: Text(nome,
-                      style: const TextStyle(fontWeight: FontWeight.w600)),
-                  trailing: PopupMenuButton<String>(
-                    icon: Icon(Icons.more_vert, color: Colors.grey.shade500),
-                    onSelected: (val) {
-                      switch (val) {
-                        case 'renomear':
-                          _mostrarDialogRenomear(context, doc.id, nome);
-                        case 'remover':
-                          _confirmarDelete(context, doc.id, nome);
-                      }
-                    },
-                    itemBuilder: (_) => [
-                      const PopupMenuItem(
-                        value: 'renomear',
-                        child: Row(children: [
-                          Icon(Icons.edit_outlined,
-                              color: Colors.blueAccent, size: 18),
-                          SizedBox(width: 10),
-                          Text('Renomear'),
-                        ]),
-                      ),
-                      const PopupMenuItem(
-                        value: 'remover',
-                        child: Row(children: [
-                          Icon(Icons.delete_outline,
-                              color: Colors.red, size: 18),
-                          SizedBox(width: 10),
-                          Text('Remover',
-                              style: TextStyle(color: Colors.red)),
-                        ]),
+                ],
+              );
+            }
+
+            return ListView.builder(
+              padding: const EdgeInsets.all(16),
+              itemCount: turmas.length,
+              itemBuilder: (context, index) {
+                final turma = turmas[index];
+                final id = turma['id'] as String;
+                final nome = (turma['nome'] as String?) ?? 'Turma';
+
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(14),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.05),
+                        blurRadius: 8,
+                        offset: const Offset(0, 3),
                       ),
                     ],
                   ),
-                  onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) =>
-                          TurmaDetailPage(turmaId: doc.id, turmaNome: nome),
+                  child: ListTile(
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    leading: const CircleAvatar(
+                      backgroundColor: Color(0xFFE8F5E9),
+                      child: Icon(Icons.group, color: Colors.green),
                     ),
+                    title: Text(nome,
+                        style: const TextStyle(fontWeight: FontWeight.w600)),
+                    trailing: PopupMenuButton<String>(
+                      icon: Icon(Icons.more_vert, color: Colors.grey.shade500),
+                      onSelected: (val) {
+                        switch (val) {
+                          case 'renomear':
+                            _mostrarDialogRenomear(context, id, nome);
+                          case 'remover':
+                            _confirmarDelete(context, id, nome);
+                        }
+                      },
+                      itemBuilder: (_) => [
+                        const PopupMenuItem(
+                          value: 'renomear',
+                          child: Row(children: [
+                            Icon(Icons.edit_outlined,
+                                color: Colors.blueAccent, size: 18),
+                            SizedBox(width: 10),
+                            Text('Renomear'),
+                          ]),
+                        ),
+                        const PopupMenuItem(
+                          value: 'remover',
+                          child: Row(children: [
+                            Icon(Icons.delete_outline,
+                                color: Colors.red, size: 18),
+                            SizedBox(width: 10),
+                            Text('Remover',
+                                style: TextStyle(color: Colors.red)),
+                          ]),
+                        ),
+                      ],
+                    ),
+                    onTap: () async {
+                      await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              TurmaDetailPage(turmaId: id, turmaNome: nome),
+                        ),
+                      );
+                      _recarregar();
+                    },
                   ),
-                ),
-              );
-            },
-          );
-        },
+                );
+              },
+            );
+          },
+        ),
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _mostrarDialogCriar(context),
